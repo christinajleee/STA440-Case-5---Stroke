@@ -1,0 +1,339 @@
+---
+title: "EDA"
+format: html
+---
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(naniar)
+library(corrplot)
+library(gridExtra)
+
+load("strokeStudy.RData")
+
+cat("DATASET OVERVIEW\n")
+cat("Dataset name: x\n")
+cat("Dimensions:", dim(x), "\n")
+cat("Variables:", names(x), "\n\n")
+
+cat("BASIC DATA OVERVIEW\n")
+str(x)
+summary(x)
+
+cat("MISSING DATA ANALYSIS\n")
+miss_summary <- miss_var_summary(x)
+print(miss_summary)
+
+p1 <- gg_miss_var(x) +
+  labs(title = "Missing Data by Variable")
+
+missing_by_time <- x |>
+  group_by(Time2) |>
+  summarise(across(everything(), ~sum(is.na(.))/n() * 100)) |>
+  pivot_longer(cols = -Time2, names_to = "variable", values_to = "missing_pct")
+
+p2 <- ggplot(missing_by_time, aes(x = Time2, y = missing_pct, color = variable)) +
+  geom_line(aes(group = variable)) +
+  geom_point() +
+  labs(title = "Missing Data Patterns Over Time",
+       y = "Missing (%)", x = "Study Quarter") +
+  theme(legend.position = "none")
+
+cat("OUTCOME VARIABLE: homeOrRehab\n")
+outcome_table <- table(x$homeOrRehab, useNA = "always")
+outcome_prop <- prop.table(table(x$homeOrRehab))
+print(outcome_table)
+print(outcome_prop)
+
+p3 <- ggplot(x, aes(x = homeOrRehab)) +
+  geom_bar(fill = "steelblue", alpha = 0.7) +
+  labs(title = "Distribution of Discharge Disposition",
+       x = "Home or Rehabilitation", y = "Count") +
+  geom_text(stat = 'count', aes(label = ..count..), vjust = -0.5)
+
+outcome_time <- x |>
+  group_by(Time2, homeOrRehab) |>
+  summarise(count = n()) |>
+  group_by(Time2) |>
+  mutate(prop = count/sum(count)) |>
+  filter(homeOrRehab == TRUE)
+
+p4 <- ggplot(outcome_time, aes(x = Time2, y = prop)) +
+  geom_col(fill = "darkgreen", alpha = 0.7) +
+  geom_text(aes(label = paste0(round(prop*100, 1), "%")), vjust = -0.5) +
+  labs(title = "Proportion of Good Outcomes by Study Quarter",
+       y = "Proportion with Good Outcome", x = "Study Quarter") +
+  ylim(0, 1)
+
+cat("DEMOGRAPHIC VARIABLES\n")
+p5 <- ggplot(x, aes(x = homeOrRehab, y = Age, fill = homeOrRehab)) +
+  geom_boxplot(alpha = 0.7) +
+  labs(title = "Age Distribution by Outcome",
+       x = "Home or Rehabilitation", y = "Age") +
+  theme(legend.position = "none")
+
+gender_outcome <- x |>
+  count(Gender, homeOrRehab) |>
+  group_by(Gender) |>
+  mutate(prop = n/sum(n))
+
+p6 <- ggplot(gender_outcome, aes(x = Gender, y = prop, fill = homeOrRehab)) +
+  geom_bar(stat = "identity", position = "fill") +
+  labs(title = "Outcome Distribution by Gender",
+       y = "Proportion") +
+  scale_y_continuous(labels = scales::percent)
+
+race_outcome <- x |>
+  count(Race2, homeOrRehab) |>
+  group_by(Race2) |>
+  mutate(prop = n/sum(n))
+
+p7 <- ggplot(race_outcome, aes(x = Race2, y = prop, fill = homeOrRehab)) +
+  geom_bar(stat = "identity", position = "fill") +
+  labs(title = "Outcome Distribution by Race",
+       y = "Proportion") +
+  scale_y_continuous(labels = scales::percent) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+cat("CLINICAL AND PROCESS VARIABLES\n")
+ems_outcome <- x |>
+  count(EMSvsCar, homeOrRehab) |>
+  group_by(EMSvsCar) |>
+  mutate(prop = n/sum(n))
+
+p8 <- ggplot(ems_outcome, aes(x = factor(EMSvsCar), y = prop, fill = homeOrRehab)) +
+  geom_bar(stat = "identity", position = "fill") +
+  labs(title = "Outcome by Arrival Mode",
+       x = "Arrival by EMS (1=Yes, 0=No)", y = "Proportion") +
+  scale_y_continuous(labels = scales::percent)
+
+treatment_plots <- list()
+treatment_vars <- c("hadThrombectomy", "hadTPA", "PreHospNotify")
+
+for(i in seq_along(treatment_vars)) {
+  var <- treatment_vars[i]
+  treatment_data <- x |>
+    count(!!sym(var), homeOrRehab) |>
+    group_by(!!sym(var)) |>
+    mutate(prop = n/sum(n))
+  
+  treatment_plots[[i]] <- ggplot(treatment_data, 
+                                 aes(x = factor(!!sym(var)), y = prop, fill = homeOrRehab)) +
+    geom_bar(stat = "identity", position = "fill") +
+    labs(title = paste("Outcome by", var),
+         x = var, y = "Proportion") +
+    scale_y_continuous(labels = scales::percent)
+}
+
+cat("COMPLICATION ANALYSIS\n")
+if("tpaComplic" %in% names(x)) {
+  print(table(x$tpaComplic, useNA = "always"))
+}
+
+if("thrComplic" %in% names(x)) {
+  print(table(x$thrComplic, useNA = "always"))
+}
+
+cat("SITE-SPECIFIC ANALYSIS\n")
+site_outcome <- x |>
+  group_by(siteID, homeOrRehab) |>
+  summarise(count = n()) |>
+  group_by(siteID) |>
+  mutate(prop_good = count/sum(count)) |>
+  filter(homeOrRehab == TRUE)
+
+p9 <- ggplot(site_outcome, aes(x = factor(siteID), y = prop_good)) +
+  geom_col(fill = "purple", alpha = 0.7) +
+  geom_text(aes(label = paste0(round(prop_good*100, 1), "%")), vjust = -0.5) +
+  labs(title = "Proportion of Good Outcomes by Site",
+       y = "Proportion with Good Outcome", x = "Site ID") +
+  ylim(0, 1)
+
+cat("GENERATING SUMMARY PLOTS...\n")
+grid.arrange(p3, p4, p5, p6, ncol = 2)
+grid.arrange(p7, p8, p9, ncol = 2)
+
+for(plot in treatment_plots) {
+  print(plot)
+}
+
+cat("SUMMARY STATISTICS TABLE\n")
+demographic_summary <- x |>
+  group_by(homeOrRehab) |>
+  summarise(
+    n = n(),
+    mean_age = mean(Age, na.rm = TRUE),
+    sd_age = sd(Age, na.rm = TRUE),
+    .groups = 'drop'
+  )
+print(demographic_summary)
+
+cat("TIME TREND ANALYSIS FOR PROGRAM EFFECTIVENESS\n")
+x <- x |>
+  mutate(period = case_when(
+    Time2 %in% 1:2 ~ "Baseline",
+    Time2 %in% 3:6 ~ "Implementation", 
+    Time2 %in% 7:8 ~ "End-of-Study",
+    TRUE ~ "Other"
+  ))
+
+period_outcome <- x |>
+  group_by(period, homeOrRehab) |>
+  summarise(count = n()) |>
+  group_by(period) |>
+  mutate(prop = count/sum(count),
+         total = sum(count)) |>
+  filter(homeOrRehab == TRUE)
+
+print(period_outcome)
+
+p10 <- ggplot(period_outcome, aes(x = period, y = prop)) +
+  geom_col(fill = "orange", alpha = 0.7) +
+  geom_text(aes(label = paste0(round(prop*100, 1), "%\n(n=", total, ")")), vjust = -0.5) +
+  labs(title = "Good Outcomes by Study Period",
+       y = "Proportion with Good Outcome", x = "Study Period") +
+  ylim(0, 1)
+
+print(p10)
+
+cat("CORRELATION ANALYSIS\n")
+numeric_data <- x |>
+  select(where(is.numeric)) |>
+  select(-any_of(c("siteID")))
+
+if(ncol(numeric_data) > 1) {
+  cor_matrix <- cor(numeric_data, use = "pairwise.complete.obs")
+  corrplot(cor_matrix, method = "circle", type = "upper")
+}
+```
+```{r}
+# Load libraries
+library(tidyverse)
+library(naniar)
+
+# 1. MISSING DATA ANALYSIS
+miss_var_summary(x)
+
+# Missing by time
+x |>
+  group_by(Time2) |>
+  summarise(across(everything(), ~sum(is.na(.))/n() * 100)) |>
+  print(n = Inf)
+
+# Missing by site  
+x |>
+  group_by(siteID) |>
+  summarise(across(everything(), ~sum(is.na(.))/n() * 100)) |>
+  print(n = Inf)
+
+# 2. OUTCOME TRENDS OVER TIME
+# Good outcome rate by quarter
+x |>
+  group_by(Time2) |>
+  summarise(
+    n = n(),
+    good_outcome_rate = mean(homeOrRehab, na.rm = TRUE)
+  ) |>
+  ggplot(aes(x = Time2, y = good_outcome_rate)) +
+  geom_col() +
+  geom_text(aes(label = paste0(round(good_outcome_rate*100, 1), "%")), vjust = -0.5) +
+  labs(title = "Good Outcome Rate by Quarter", y = "Proportion Home/Rehab")
+
+# 3. BINARY VARIABLES OVER TIME
+binary_vars <- c("EMSvsCar", "PreHospNotify", "hadThrombectomy", "hadTPA", "tpaComplic", "thrComplic")
+
+for(var in binary_vars) {
+  x |>
+    group_by(Time2) |>
+    summarise(rate = mean(!!sym(var), na.rm = TRUE)) |>
+    ggplot(aes(x = Time2, y = rate)) +
+    geom_col() +
+    labs(title = paste(var, "Rate by Quarter"), y = "Proportion")
+  print(last_plot())
+}
+
+# 4. AGE AND OUTCOMES
+# Age distribution by outcome
+ggplot(x, aes(x = homeOrRehab, y = Age)) +
+  geom_boxplot() +
+  labs(title = "Age by Outcome")
+
+# Age trends over time
+x |>
+  group_by(Time2) |>
+  summarise(mean_age = mean(Age, na.rm = TRUE)) |>
+  ggplot(aes(x = Time2, y = mean_age)) +
+  geom_line(group = 1) +
+  geom_point() +
+  labs(title = "Mean Age by Quarter", y = "Mean Age")
+
+# 5. DEMOGRAPHICS AND OUTCOMES
+# Gender
+x |>
+  group_by(Time2, Gender, homeOrRehab) |>
+  summarise(n = n()) |>
+  group_by(Time2, Gender) |>
+  mutate(prop = n/sum(n)) |>
+  filter(homeOrRehab == TRUE) |>
+  ggplot(aes(x = Time2, y = prop, color = Gender)) +
+  geom_line(aes(group = Gender)) +
+  geom_point() +
+  labs(title = "Good Outcome Rate by Gender Over Time", y = "Proportion")
+
+# Race
+x |>
+  group_by(Time2, Race2, homeOrRehab) |>
+  summarise(n = n()) |>
+  group_by(Time2, Race2) |>
+  mutate(prop = n/sum(n)) |>
+  filter(homeOrRehab == TRUE) |>
+  ggplot(aes(x = Time2, y = prop, color = Race2)) +
+  geom_line(aes(group = Race2)) +
+  geom_point() +
+  labs(title = "Good Outcome Rate by Race Over Time", y = "Proportion")
+
+# 6. SITE VARIATION
+x |>
+  group_by(siteID, homeOrRehab) |>
+  summarise(n = n()) |>
+  group_by(siteID) |>
+  mutate(prop = n/sum(n)) |>
+  filter(homeOrRehab == TRUE) |>
+  ggplot(aes(x = siteID, y = prop)) +
+  geom_col() +
+  labs(title = "Good Outcome Rate by Site", y = "Proportion")
+
+# 7. KEY ASSOCIATIONS - SIMPLE MODELS
+# Age effect
+glm(homeOrRehab ~ Age, data = x, family = binomial) |> summary()
+
+# Treatment effects
+glm(homeOrRehab ~ hadThrombectomy + hadTPA, data = x, family = binomial) |> summary()
+
+# Process variables
+glm(homeOrRehab ~ EMSvsCar + PreHospNotify, data = x, family = binomial) |> summary()
+```
+
+```{r}
+binary_vars <- c("PreHospNotify", "hadThrombectomy", "hadTPA", "tpaComplic", "thrComplic")
+var_names <- c("Pre-Hospital Notify", "Thrombectomy", "TPA", "TPA Complications", "Thrombectomy Complications")
+
+for(i in 1:length(binary_vars)) {
+  plot_data <- x |>
+    count(Time2, !!sym(binary_vars[i])) |>
+    group_by(Time2) |>
+    mutate(prop = n / sum(n))
+  
+  ggplot(plot_data, aes(x = Time2, y = prop, fill = !!sym(binary_vars[i]))) +
+    geom_col() +
+    geom_text(aes(label = paste0(round(prop*100, 1), "%")), 
+              position = position_stack(vjust = 0.5), size = 3) +
+    labs(title = paste(var_names[i], "by Quarter"), 
+         y = "Proportion",
+         x = "Study Quarter",
+         fill = var_names[i])
+  print(last_plot())
+}
+```
+
