@@ -466,7 +466,9 @@ x %>%
   arrange(desc(pct_missing))
 gg_miss_upset(x)
 
-
+# drop homeOrRehab NAs
+x <- x %>%
+  drop_na(homeOrRehab)
 ```
 ```{r}
 library(naniar)
