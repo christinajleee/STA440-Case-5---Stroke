@@ -337,3 +337,4 @@ for(i in 1:length(binary_vars)) {
 }
 ```
 
+test
