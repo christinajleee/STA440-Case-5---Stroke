@@ -4,6 +4,379 @@ format: html
 ---
 
 ```{r}
+# packages
+library(tidyverse)
+
+# make a working copy
+df <- x
+
+# --- 0. quick helpers & check ---
+# ensure outcome numeric 0/1 for later correlation
+# adjust to your actual encoding if "Yes"/"No" or TRUE/FALSE etc.
+df <- df %>%
+  mutate(
+    homeOrRehab_num = case_when(
+      is.numeric(homeOrRehab) ~ as.integer(homeOrRehab),
+      is.logical(homeOrRehab) ~ as.integer(homeOrRehab),            # TRUE->1, FALSE->0
+      toupper(as.character(homeOrRehab)) %in% c("YES","1","TRUE") ~ 1L,
+      toupper(as.character(homeOrRehab)) %in% c("NO","0","FALSE") ~ 0L,
+      TRUE ~ NA_integer_
+    )
+  )
+
+# --- 1. Impute Age with linear regression ---
+# choose predictors that are mostly complete / useful. Adjust as needed.
+lm_age <- lm(
+  Age ~ Gender + Race2 + Time2 + hadThrombectomy + hadTPA + tpaComplic + thrComplic + homeOrRehab_num,
+  data = df,
+  na.action = na.exclude
+)
+
+age_na_idx <- which(is.na(df$Age))
+if (length(age_na_idx) > 0) {
+  pred_age <- predict(lm_age, newdata = df[age_na_idx, ], se.fit = FALSE)
+  # Option A: deterministic imputation
+  df$Age[age_na_idx] <- pred_age
+  # Option B (commented): stochastic imputation adding residual noise
+  # resid_sd <- sd(lm_age$residuals, na.rm = TRUE)
+  # df$Age[age_na_idx] <- pred_age + rnorm(length(pred_age), mean = 0, sd = resid_sd)
+}
+
+df
+
+# --- 2. Impute PreHospNotify with logistic regression (stochastic) ---
+# Make sure PreHospNotify is binary (0/1 or factor). We'll treat {"Yes"/"No","1"/"0","TRUE"/"FALSE"}.
+# Convert to 0/1 for modeling, leaving NA as NA.
+df <- df %>%
+  mutate(
+    PreHospNotify_bin = case_when(
+      is.numeric(PreHospNotify) ~ as.integer(PreHospNotify),
+      is.logical(PreHospNotify) ~ as.integer(PreHospNotify),
+      toupper(as.character(PreHospNotify)) %in% c("YES","1","TRUE") ~ 1L,
+      toupper(as.character(PreHospNotify)) %in% c("NO","0","FALSE") ~ 0L,
+      TRUE ~ NA_integer_
+    )
+  )
+
+glm_pre <- glm(
+  PreHospNotify_bin ~ Age + Gender + Race2 + siteID + Time2 + hadThrombectomy + hadTPA + tpaComplic + thrComplic + homeOrRehab_num,
+  data = df,
+  family = binomial(),
+  na.action = na.exclude
+)
+
+pre_na_idx <- which(is.na(df$PreHospNotify_bin))
+if (length(pre_na_idx) > 0) {
+  p_hat <- predict(glm_pre, newdata = df[pre_na_idx, ], type = "response")
+  # stochastic imputation: draw from Bernoulli(p_hat)
+  set.seed(123)  # reproducible
+  df$PreHospNotify_bin[pre_na_idx] <- rbinom(length(p_hat), size = 1, prob = p_hat)
+}
+
+# Optionally convert back to original format/labels:
+df <- df %>% mutate(PreHospNotify_imp = if_else(is.na(PreHospNotify), as.character(PreHospNotify_bin), as.character(PreHospNotify)))
+
+df 
+
+# --- 3. Impute EMSvsCar with logistic regression (stochastic) ---
+# Clean/encode EMSvsCar similarly to 0/1
+df <- df %>%
+  mutate(
+    EMSvsCar_bin = case_when(
+      is.numeric(EMSvsCar) ~ as.integer(EMSvsCar),
+      is.logical(EMSvsCar) ~ as.integer(EMSvsCar),
+      toupper(as.character(EMSvsCar)) %in% c("YES","1","TRUE") ~ 1L,
+      toupper(as.character(EMSvsCar)) %in% c("NO","0","FALSE") ~ 0L,
+      TRUE ~ NA_integer_
+    )
+  )
+
+glm_ems <- glm(
+  EMSvsCar_bin ~ Age + PreHospNotify_bin + Gender + Race2 + siteID + Time2 + hadThrombectomy + hadTPA + tpaComplic + thrComplic + homeOrRehab_num,
+  data = df,
+  family = binomial(),
+  na.action = na.exclude
+)
+
+ems_na_idx <- which(is.na(df$EMSvsCar_bin))
+if (length(ems_na_idx) > 0) {
+  p_hat_ems <- predict(glm_ems, newdata = df[ems_na_idx, ], type = "response")
+  set.seed(456)
+  df$EMSvsCar_bin[ems_na_idx] <- rbinom(length(p_hat_ems), size = 1, prob = p_hat_ems)
+}
+
+df <- df %>% mutate(EMSvsCar_imp = if_else(is.na(EMSvsCar), as.character(EMSvsCar_bin), as.character(EMSvsCar)))
+
+df
+
+# --- 4. Create a final "imputed" dataset for correlation calculations ---
+# Replace original columns with imputed numeric versions where appropriate
+df_imputed <- df %>%
+  # numeric Age (already imputed)
+  mutate(Age_imp = Age) %>%
+  # ensure PreHospNotify_imp and EMSvsCar_imp are numeric 0/1 in new columns
+  mutate(
+    PreHospNotify_imp_num = as.integer(as.character(PreHospNotify_bin)),
+    EMSvsCar_imp_num      = as.integer(as.character(EMSvsCar_bin))
+  )
+
+# If you want to keep original other vars, keep them; we'll compute correlation vs homeOrRehab_num
+# Build a list of variables to correlate (exclude homeOrRehab and helper cols)
+vars_to_test <- df_imputed %>% select(-homeOrRehab) %>% names()
+
+df
+
+
+# We'll compute correlation vs 'homeOrRehab_num' for each variable in the dataset.
+# - If variable is numeric -> Pearson correlation
+# - If not numeric (factor/character) -> Spearman correlation on integer codes (proxy)
+cor_results <- map_dfr(vars_to_test, function(varname) {
+  vec <- df_imputed[[varname]]
+  y   <- df_imputed$homeOrRehab_num
+
+  # skip the helper columns we've added
+  if (varname %in% c("homeOrRehab_num", "PreHospNotify_bin", "EMSvsCar_bin")) {
+    return(tibble(variable = varname, type = typeof(vec), method = NA_character_, correlation = NA_real_, n = NA_integer_))
+  }
+
+  # require at least some non-NA pairs
+  ok <- !is.na(vec) & !is.na(y)
+  n_ok <- sum(ok)
+  if (n_ok < 10) {
+    return(tibble(variable = varname, type = typeof(vec), method = NA_character_, correlation = NA_real_, n = n_ok))
+  }
+
+  if (is.numeric(vec) || is.integer(vec)) {
+    corr_val <- cor(vec, y, use = "complete.obs", method = "pearson")
+    method <- "pearson"
+  } else {
+    # convert factor/character/logical to integer codes and do Spearman (rank) correlation
+    vec_code <- as.integer(as.factor(vec))
+    corr_val <- suppressWarnings(cor(vec_code, y, use = "complete.obs", method = "spearman"))
+    method <- "spearman_on_codes"
+  }
+
+  tibble(variable = varname, type = class(vec)[1], method = method, correlation = as.numeric(corr_val), n = n_ok)
+})
+
+# Clean up results: focus on meaningful columns (and include key imputed ones)
+cor_results <- cor_results %>%
+  filter(!variable %in% c("homeOrRehab", "homeOrRehab_num")) %>%
+  arrange(desc(abs(correlation)))
+
+# show results
+print(cor_results)
+
+# optionally write to csv
+# readr::write_csv(cor_results, "correlations_vs_homeOrRehab.csv")
 
 ```
+```{r}
+# packages (install if needed)
+library(tidyverse)
+library(broom)    # tidy output
+library(car)      # vif
+library(pROC)     # ROC/AUC
+
+# 0. Quick checks & factor conversion
+stopifnot("df_imputed" %in% ls())  # ensure df_imputed exists
+
+df_imputed <- df_imputed %>%
+  mutate(
+    homeOrRehab_num = as.integer(homeOrRehab_num),
+    Age_imp = as.numeric(Age_imp),
+    PreHospNotify_imp_num = as.integer(PreHospNotify_imp_num),
+    EMSvsCar_imp_num      = as.integer(EMSvsCar_imp_num),
+    # convert these to factors (edit list to match your df)
+    Gender = as.factor(Gender),
+    Race2  = as.factor(Race2),
+    siteID = as.factor(siteID),
+    Time2  = as.factor(Time2),
+    hadThrombectomy = as.factor(hadThrombectomy),
+    hadTPA = as.factor(hadTPA),
+    tpaComplic = as.factor(tpaComplic),
+    thrComplic = as.factor(thrComplic)
+  )
+
+# 1. Choose predictors (customize this list)
+predictors <- c(
+  "Age_imp",
+  "PreHospNotify_imp_num",
+  "EMSvsCar_imp_num",
+  "Gender",
+  "Race2",
+  "siteID",
+  "Time2",
+  "hadThrombectomy",
+  "hadTPA",
+  "tpaComplic",
+  "thrComplic"
+)
+
+# drop any predictors that are not present in df_imputed
+predictors <- predictors[predictors %in% names(df_imputed)]
+
+# 2. Build formula and fit logistic regression
+fmla <- as.formula(paste("homeOrRehab_num ~", paste(predictors, collapse = " + ")))
+final_glm <- glm(fmla, data = df_imputed, family = binomial(), na.action = na.exclude)
+
+# 3. Model summary (coefficients)
+summary(final_glm)
+
+# 4. Odds ratios (exponentiated coefficients) with 95% CI
+or_table <- broom::tidy(final_glm, conf.int = TRUE) %>%
+  mutate(
+    OR = exp(estimate),
+    OR_low = exp(conf.low),
+    OR_high = exp(conf.high)
+  ) %>%
+  select(term, estimate, OR, OR_low, OR_high, p.value)
+print(or_table)
+
+# 5. Check multicollinearity (VIF) -- numeric predictors only; factors are handled by car::vif
+vif_vals <- tryCatch({
+  car::vif(final_glm)
+}, error = function(e) {
+  message("VIF computation failed: ", e$message); NULL
+})
+print(vif_vals)
+
+# 6. Predicted probabilities, ROC and AUC
+df_imputed <- df_imputed %>%
+  mutate(pred_prob = predict(final_glm, type = "response"))
+
+roc_obj <- pROC::roc(df_imputed$homeOrRehab_num, df_imputed$pred_prob, quiet = TRUE)
+auc_val <- pROC::auc(roc_obj)
+cat("AUC =", round(as.numeric(auc_val), 3), "\n")
+
+# optional: plot ROC
+plot(roc_obj, main = paste0("ROC (AUC = ", round(as.numeric(auc_val),3), ")"))
+
+# 7. Confusion table at 0.5 threshold (adjust threshold as desired)
+threshold <- 0.5
+df_imputed <- df_imputed %>%
+  mutate(pred_class = if_else(pred_prob >= threshold, 1L, 0L))
+
+table_truth_pred <- table(Observed = df_imputed$homeOrRehab_num, Predicted = df_imputed$pred_class)
+print(table_truth_pred)
+
+# 8. Optionally save tidy results
+write_csv(or_table, "final_logistic_or_table.csv")
+
+```
+
+# phase
+```{r}
+library(tidyverse)
+library(broom)
+library(scales)
+library(car)
+library(pROC)
+
+# --- Example mapping (edit if you want different assignment for boundary quarters) ---
+control_qtrs <- c("Y1Q1", "Y1Q2")                  # red in your plot
+impl_qtrs    <- c("Y1Q3", "Y1Q4", "Y2Q1", "Y2Q2")  # green
+treat_qtrs   <- c("Y2Q3", "Y2Q4")                         # blue
+
+# Priority: treatment > implementation > control (so if a quarter appears in multiple lists
+# it will be assigned to the highest-priority group listed first).
+assign_phase <- function(time2) {
+  if (is.na(time2)) return(NA_character_)
+  t <- as.character(time2)
+  if (t %in% treat_qtrs) return("treatment")
+  if (t %in% impl_qtrs)  return("implementation")
+  if (t %in% control_qtrs) return("control")
+  # fallback
+  return(NA_character_)
+}
+
+# --- Ensure df_imputed exists (this is your dataset with imputed vars) ---
+stopifnot(exists("df_imputed"))
+
+# Create phase_group and add to df_imputed
+df_imputed <- df_imputed %>%
+  mutate(
+    Time2 = as.character(Time2),  # make sure character for mapping
+    phase_group = vapply(Time2, assign_phase, FUN.VALUE = character(1)),
+    phase_group = factor(phase_group, levels = c("control", "implementation", "treatment"))
+  )
+
+# Quick check of counts
+table(df_imputed$phase_group, useNA = "ifany") %>% print()
+
+# --- Fit final logistic model including phase_group ---
+# Make sure all columns exist and are correctly typed
+df_imputed <- df_imputed %>%
+  mutate(
+    homeOrRehab_num = as.integer(homeOrRehab_num),   # outcome 0/1
+    Age_imp = as.numeric(Age_imp),
+    PreHospNotify_imp_num = as.integer(PreHospNotify_imp_num),
+    EMSvsCar_imp_num = as.integer(EMSvsCar_imp_num),
+    Gender = as.factor(Gender),
+    Race2  = as.factor(Race2),
+    siteID = as.factor(siteID),
+    Time2  = as.factor(Time2),
+    hadThrombectomy = as.factor(hadThrombectomy),
+    hadTPA = as.factor(hadTPA),
+    tpaComplic = as.factor(tpaComplic),
+    thrComplic = as.factor(thrComplic)
+  )
+
+# Define predictors (include phase_group)
+predictors <- c(
+  "Age_imp",
+  "PreHospNotify_imp_num",
+  "EMSvsCar_imp_num",
+  "phase_group",
+  "Gender",
+  "Race2",
+  "siteID",
+  "Time2",
+  "hadThrombectomy",
+  "hadTPA",
+  "tpaComplic",
+  "thrComplic"
+)
+
+predictors <- predictors[predictors %in% names(df_imputed)]
+
+fmla <- as.formula(paste("homeOrRehab_num ~", paste(predictors, collapse = " + ")))
+
+final_glm_phase <- glm(fmla, data = df_imputed, family = binomial(), na.action = na.exclude)
+
+# --- Output results ---
+summary(final_glm_phase)
+
+or_table <- broom::tidy(final_glm_phase, conf.int = TRUE) %>%
+  mutate(
+    OR = exp(estimate),
+    OR_low = exp(conf.low),
+    OR_high = exp(conf.high)
+  ) %>%
+  select(term, estimate, OR, OR_low, OR_high, p.value) %>%
+  arrange(p.value)
+
+print(or_table)
+
+# VIF (note: for models with many factor levels, vif() can be high or produce many entries)
+vif_vals <- tryCatch(car::vif(final_glm_phase), error = function(e) { message("VIF error: ", e$message); NULL })
+print(vif_vals)
+
+# ROC / AUC
+df_imputed <- df_imputed %>% mutate(pred_prob_phase = predict(final_glm_phase, type = "response"))
+roc_obj <- pROC::roc(df_imputed$homeOrRehab_num, df_imputed$pred_prob_phase, quiet = TRUE)
+cat("AUC =", round(as.numeric(pROC::auc(roc_obj)), 3), "\n")
+plot(roc_obj, main = paste0("ROC (AUC = ", round(as.numeric(pROC::auc(roc_obj)),3), ")"))
+
+# Confusion matrix at 0.5 threshold
+df_imputed <- df_imputed %>% mutate(pred_class_phase = if_else(pred_prob_phase >= 0.5, 1L, 0L))
+print(table(Observed = df_imputed$homeOrRehab_num, Predicted = df_imputed$pred_class_phase))
+
+# --- Optional: show effect of phase_group only (reference = control) as ORs ---
+phase_coefs <- or_table %>% filter(str_detect(term, "^phase_group")) 
+print(phase_coefs)
+
+```
+
+
 
