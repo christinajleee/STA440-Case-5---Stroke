@@ -17,7 +17,8 @@ library(pROC)
 library(scales)
 library(patchwork)
 library(naniar)
-
+#install.packages("kableExtra")
+library(kableExtra)
 library(mice)
 
 load("strokeStudy.RData")
@@ -226,15 +227,49 @@ kable(
 )
 ```
 
+```{r}
+vis_miss(df)
+df %>% 
+  summarise(across(everything(), ~ mean(is.na(.))*100)) %>% 
+  pivot_longer(everything(),
+               names_to = "variable",
+               values_to = "pct_missing") %>% 
+  arrange(desc(pct_missing))
+gg_miss_upset(df)
+
+miss_by_site <- df %>%
+  group_by(siteID) %>%
+  summarise(across(everything(), 
+                   ~ mean(is.na(.)), 
+                   .names = "missing_{col}"))
+
+miss_by_site
+
+miss_by_site %>%
+  pivot_longer(-siteID) %>%
+  ggplot(aes(x = name, y = siteID, fill = value)) +
+  geom_tile() +
+  scale_fill_viridis_c(option = "plasma") +
+  labs(title = "Missingness by Site",
+       x = "Variable", y = "SiteID", fill = "% Missing") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
 
 ```{r}
+
 imp_df <- df %>%
   mutate(
     Age = as.numeric(Age),
     PreHospNotify = as.factor(PreHospNotify),
     EMSvsCar = as.factor(EMSvsCar),
-    Race2 = as.factor(Race2)
+    Race2 = as.factor(Race2),
+    phase = as.factor(phase),
+    operation_type = as.factor(operation_type),
+    complication_type = as.factor(complication_type)
   )
+
+
 
 
 # Initialize with default methods
@@ -245,6 +280,9 @@ meth["Age"]            <- "norm"      # linear regression
 meth["PreHospNotify"]  <- "logreg"    # logistic regression for binary
 meth["EMSvsCar"]       <- "logreg"    # logistic regression for binary
 meth["Race2"]          <- "polyreg"   # multinomial logistic regression
+meth["phase"] <- ""
+meth["operation_type"] <- ""
+meth["complication_type"] <- ""
 
 # (Everything else stays "" meaning “passive”/leave as is)
 meth
@@ -255,14 +293,7 @@ pred[c("Age", "PreHospNotify", "EMSvsCar", "Race2"),
      c("Age", "PreHospNotify", "EMSvsCar", "Race2")] <- 0
 set.seed(123)
 
-imp <- mice(
-  data = imp_df,
-  m = 20,                # number of imputed datasets
-  method = meth,
-  predictorMatrix = pred,
-  maxit = 20,           # cycles
-  printFlag = TRUE
-)
+imp <- mice(imp_df, method = meth, predictorMatrix = pred, m = 20, maxit = 20)
 completed_df <- complete(imp, action = "long")
 # Or: complete(imp, 1) for the first filled-in dataset
 
@@ -272,5 +303,104 @@ completed_df <- complete(imp, action = "long")
 ```{r}
 plot(imp) 
 
+df_mice <- complete(imp, 1)
+#df_mice
+
 ```
+
+```{r}
+model1_fit <- with(
+  imp,
+  glm(
+    homeOrRehab ~ Age + Gender + Race2 + EMSvsCar + PreHospNotify +
+      hadThrombectomy + hadTPA + tpaComplic + thrComplic +
+      siteID + Time2,
+    family = binomial()
+  )
+)
+
+model1_pooled <- pool(model1_fit)
+summary(model1_pooled)
+
+model2_fit <- with(
+  imp,
+  glm(
+    homeOrRehab ~ Age + Gender + Race2 + EMSvsCar + PreHospNotify +
+      siteID + phase + operation_type + complication_type,
+    family = binomial()
+  )
+)
+
+model2_pooled <- pool(model2_fit)
+summary(model2_pooled)
+
+
+
+model1_table <- tidy(model1_pooled, conf.int = TRUE, exponentiate = TRUE) %>%
+  mutate(across(where(is.numeric), ~ round(., 3))) %>%
+  select(term, estimate, conf.low, conf.high, p.value) %>%
+  rename(
+    OR = estimate,
+    CI_low = conf.low,
+    CI_high = conf.high,
+    p = p.value
+  ) %>%
+  kbl(
+    caption = "Pooled Logistic Regression Results — Model 1 (Original Predictors)",
+    align = "c"
+  ) %>%
+  kable_classic(full_width = FALSE)
+
+model1_table
+
+model2_table <- tidy(model2_pooled, conf.int = TRUE, exponentiate = TRUE) %>%
+  mutate(across(where(is.numeric), ~ round(., 3))) %>%
+  select(term, estimate, conf.low, conf.high, p.value) %>%
+  rename(
+    OR = estimate,
+    CI_low = conf.low,
+    CI_high = conf.high,
+    p = p.value
+  ) %>%
+  kbl(
+    caption = "Pooled Logistic Regression Results — Model 2 (Phase + Combined Variables)",
+    align = "c"
+  ) %>%
+  kable_classic(full_width = FALSE)
+
+model2_table
+
+```
+
+
+```{r}
+AIC_m1 <- mean(sapply(model1_fit$analyses, AIC))
+AIC_m2 <- mean(sapply(model2_fit$analyses, AIC))
+
+AIC_m1
+AIC_m2
+
+
+auc1 <- sapply(1:imp$m, function(i) {
+  data_i <- complete(imp, i)
+  m <- model1_fit$analyses[[i]]
+  p <- predict(m, newdata = data_i, type = "response")
+  roc(data_i$homeOrRehab, p)$auc
+})
+
+auc2 <- sapply(1:imp$m, function(i) {
+  data_i <- complete(imp, i)
+  m <- model2_fit$analyses[[i]]
+  p <- predict(m, newdata = data_i, type = "response")
+  roc(data_i$homeOrRehab, p)$auc
+})
+
+mean(auc1)
+mean(auc2)
+
+```
+
+
+
+
 
