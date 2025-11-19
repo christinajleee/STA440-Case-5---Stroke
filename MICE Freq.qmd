@@ -323,37 +323,32 @@ model1_fit <- with(
 model1_pooled <- pool(model1_fit)
 summary(model1_pooled)
 
-model2_fit <- with(
-  imp,
-  glm(
-    homeOrRehab ~ Age + Gender + Race2 + EMSvsCar + PreHospNotify +
-      siteID + phase + operation_type + complication_type,
-    family = binomial()
+model1_clean <- tidy(model1_pooled, conf.int = TRUE, exponentiate = FALSE) %>% 
+  mutate(
+    estimate = round(estimate, 3),
+    conf.low = round(conf.low, 3),
+    conf.high = round(conf.high, 3),
+    p.value = round(p.value, 3)
   )
-)
 
-model2_pooled <- pool(model2_fit)
-summary(model2_pooled)
-
-
-
-# model1_table <- tidy(model1_pooled, conf.int = TRUE, exponentiate = TRUE) %>%
-#   mutate(across(where(is.numeric), ~ round(., 3))) %>%
-#   select(term, estimate, conf.low, conf.high, p.value) %>%
-#   rename(
-#     OR = estimate,
-#     CI_low = conf.low,
-#     CI_high = conf.high,
-#     p = p.value
-#   ) %>%
-#   kbl(
-#     caption = "Pooled Logistic Regression Results — Model 1 (Original Predictors)",
-#     align = "c"
-#   ) %>%
-#   kable_classic(full_width = FALSE)
+model1_clean %>%
+  kbl(
+    caption = "Pooled Logistic Regression Results — Model 1 (Log-Odds Scale)",
+    align = "c"
+  ) %>%
+  kable_classic(full_width = FALSE)
+# model2_fit <- with(
+#   imp,
+#   glm(
+#     homeOrRehab ~ Age + Gender + Race2 + EMSvsCar + PreHospNotify +
+#       siteID + phase + operation_type + complication_type,
+#     family = binomial()
+#   )
+# )
 # 
-# model1_table
-# 
+# model2_pooled <- pool(model2_fit)
+# summary(model2_pooled)
+
 # model2_table <- tidy(model2_pooled, conf.int = TRUE, exponentiate = TRUE) %>%
 #   mutate(across(where(is.numeric), ~ round(., 3))) %>%
 #   select(term, estimate, conf.low, conf.high, p.value) %>%
@@ -376,10 +371,10 @@ summary(model2_pooled)
 
 ```{r}
 AIC_m1 <- mean(sapply(model1_fit$analyses, AIC))
-AIC_m2 <- mean(sapply(model2_fit$analyses, AIC))
+# AIC_m2 <- mean(sapply(model2_fit$analyses, AIC))
 
 AIC_m1
-AIC_m2
+# AIC_m2
 
 
 auc1 <- sapply(1:imp$m, function(i) {
@@ -389,15 +384,15 @@ auc1 <- sapply(1:imp$m, function(i) {
   roc(data_i$homeOrRehab, p)$auc
 })
 
-auc2 <- sapply(1:imp$m, function(i) {
-  data_i <- complete(imp, i)
-  m <- model2_fit$analyses[[i]]
-  p <- predict(m, newdata = data_i, type = "response")
-  roc(data_i$homeOrRehab, p)$auc
-})
+# auc2 <- sapply(1:imp$m, function(i) {
+#   data_i <- complete(imp, i)
+#   m <- model2_fit$analyses[[i]]
+#   p <- predict(m, newdata = data_i, type = "response")
+#   roc(data_i$homeOrRehab, p)$auc
+# })
 
 mean(auc1)
-mean(auc2)
+# mean(auc2)
 
 ```
 
