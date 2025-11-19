@@ -1,0 +1,130 @@
+---
+title: "MICE Freq and EDA"
+format: pdf
+editor: visual
+---
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(naniar)
+library(corrplot)
+library(gridExtra)
+library(purrr)
+library(broom)
+library(car)      # vif
+library(pROC) 
+library(scales)
+library(patchwork)
+library(naniar)
+
+load("strokeStudy.RData")
+df <- x
+
+df <- df %>%
+  mutate(
+    Race2 = if_else(
+      tolower(as.character(Race2)) == "missing",
+      NA_character_,
+      as.character(Race2)
+    ),
+    siteID = as.factor(as.character(siteID))
+  )
+
+#df %>%
+#  count(Race2, sort = TRUE)
+
+#unique(df$siteID)
+```
+
+```{r}
+#added a phase variable and a treatment variable
+df <- df %>%
+  mutate(
+    operation_type = case_when(
+      hadThrombectomy & !hadTPA ~ "Thrombectomy only",
+      !hadThrombectomy & hadTPA ~ "TPA only",
+      hadThrombectomy & hadTPA  ~ "Both",
+      !hadThrombectomy & !hadTPA ~ "None",
+      TRUE ~ NA_character_
+    ),
+    operation_type = factor(operation_type,
+                            levels = c("None", "TPA only", "Thrombectomy only", "Both")),
+    Time2 = as.character(Time2),
+    phase = case_when(
+      Time2 %in% c("Y1Q1", "Y1Q2") ~ "control",
+      Time2 %in% c("Y2Q3", "Y2Q4") ~ "treatment",
+      TRUE ~ "implementation"
+    ),
+    phase = factor(phase, levels = c("control", "implementation", "treatment")),
+    complication_type = case_when(
+      tpaComplic & !thrComplic ~ "TPA complication",
+      !tpaComplic & thrComplic ~ "Thrombectomy complication",
+      tpaComplic & thrComplic  ~ "Both complications",
+      !tpaComplic & !thrComplic ~ "No complication",
+      TRUE ~ NA_character_
+    ),
+    complication_type = factor(
+      complication_type,
+      levels = c("No complication",
+                 "TPA complication",
+                 "Thrombectomy complication",
+                 "Both complications")
+    )
+  )
+
+df <- df %>%
+  filter(!is.na(homeOrRehab))
+#df
+
+# df_with_complications <- df %>%
+#   filter(tpaComplic | thrComplic)
+# 
+# df_with_complications
+# 
+# df %>%
+#   count(complication_type) %>%
+#   mutate(
+#     percent = round(100 * n / sum(n), 1)
+#   )
+
+
+```
+
+```{r}
+ggplot(df, aes(x = operation_type, fill = homeOrRehab)) +
+  geom_bar(position = "fill") +
+  facet_wrap(~ phase) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(
+    x = "Operation Type",
+    y = "Percent of Patients",
+    fill = "Home/Rehab",
+    title = "Distribution of Home/Rehab Outcomes by Operation Type and Phase"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 40, hjust = 1)
+  )
+
+ggplot(df, aes(x = operation_type, fill = homeOrRehab)) +
+  geom_bar(position = "fill") +
+  facet_wrap(~ complication_type) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(
+    x = "Operation Type",
+    y = "Percent of Patients",
+    fill = "Home/Rehab",
+    title = "Home/Rehab Outcome by Operation Type, by Complication"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1)
+  )
+
+
+```
+
+
+
+
