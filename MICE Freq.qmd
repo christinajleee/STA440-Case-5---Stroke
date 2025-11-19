@@ -451,4 +451,18 @@ coords(roc1, "best", ret=c("threshold", "sensitivity", "specificity"))
 ```
 
 
+```{r}
+df_mice <- df_mice %>%
+  mutate(Age = pmin(pmax(Age, 18), 100))
+ggplot(df_mice, aes(x = Age, fill = homeOrRehab)) +
+  geom_density(alpha = 0.4) +
+  labs(
+    title = "Density Plot of Imputed Age by Outcome",
+    x = "Age",
+    y = "Density",
+    fill = "Outcome"
+  ) +
+  theme_bw()
+
+```
 
