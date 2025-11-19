@@ -12,11 +12,13 @@ library(corrplot)
 library(gridExtra)
 library(purrr)
 library(broom)
-library(car)      # vif
+library(car)      
 library(pROC) 
 library(scales)
 library(patchwork)
 library(naniar)
+
+library(mice)
 
 load("strokeStudy.RData")
 df <- x
@@ -104,7 +106,7 @@ ggplot(df, aes(x = operation_type, fill = homeOrRehab)) +
   ) +
   theme_bw() +
   theme(
-    axis.text.x = element_text(angle = 40, hjust = 1)
+    axis.text.x = element_text(angle = 25, hjust = 1)
   )
 
 ggplot(df, aes(x = operation_type, fill = homeOrRehab)) +
@@ -119,12 +121,156 @@ ggplot(df, aes(x = operation_type, fill = homeOrRehab)) +
   ) +
   theme_bw() +
   theme(
-    axis.text.x = element_text(angle = 30, hjust = 1)
+    axis.text.x = element_text(angle = 25, hjust = 1)
   )
 
 
 ```
 
+```{r}
 
 
+ggplot(df, aes(x = Gender, fill = complication_type)) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(
+    x = "Gender",
+    y = "Percent of Patients",
+    fill = "Complication Type",
+    title = "Proportion of Complication Types by Gender"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 12),
+    legend.position = "right"
+  )
+df %>%
+  count(Gender, complication_type) %>%          # counts for all categories
+  group_by(Gender) %>%
+  mutate(
+    percent_within_gender = round(100 * n / sum(n), 1)
+  ) %>%
+  arrange(Gender, complication_type)
+
+```
+```{r}
+
+df_comp_race <- df %>%
+  filter(!is.na(Race2))   # optional: drop NA race
+
+ggplot(df_comp_race, aes(x = Race2, fill = complication_type)) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(
+    x = "Race",
+    y = "Percent of Patients",
+    fill = "Complication Type",
+    title = "Proportion of Complication Types by Race"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+df %>%
+  filter(!is.na(Race2)) %>%
+  count(Race2, complication_type) %>%
+  group_by(Race2) %>%
+  mutate(
+    percent_within_race = round(100 * n / sum(n), 1)
+  ) %>%
+  arrange(Race2, complication_type)
+
+```
+
+
+```{r}
+df %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  pivot_longer(cols = everything(), names_to = "variable", values_to = "n_missing") %>%
+  mutate(
+    percent_missing = round(100 * n_missing / nrow(df), 2)
+  ) %>%
+  filter(n_missing > 0) %>%       
+  arrange(desc(n_missing))
+
+
+
+missing_summary <- df %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  pivot_longer(cols = everything(), names_to = "variable", values_to = "n_missing") %>%
+  mutate(percent_missing = round(100 * n_missing / nrow(df), 2)) %>%
+  filter(n_missing > 0) %>%
+  arrange(desc(n_missing))
+
+missing_summary
+
+missing_vars <- missing_summary$variable
+
+miss_df <- df %>%
+  mutate(across(all_of(missing_vars), ~ as.integer(is.na(.)), .names = "miss_{.col}"))
+
+miss_cor <- miss_df %>%
+  select(starts_with("miss_")) %>%
+  cor(use = "pairwise.complete.obs")
+
+miss_cor
+
+
+library(knitr)
+
+kable(
+  round(miss_cor, 3),
+  caption = "Correlation of Missingness Indicators",
+  align = "c"
+)
+```
+
+
+```{r}
+imp_df <- df %>%
+  mutate(
+    Age = as.numeric(Age),
+    PreHospNotify = as.factor(PreHospNotify),
+    EMSvsCar = as.factor(EMSvsCar),
+    Race2 = as.factor(Race2)
+  )
+
+
+# Initialize with default methods
+meth <- make.method(imp_df)
+
+# Specify the imputation method for each variable of interest
+meth["Age"]            <- "norm"      # linear regression
+meth["PreHospNotify"]  <- "logreg"    # logistic regression for binary
+meth["EMSvsCar"]       <- "logreg"    # logistic regression for binary
+meth["Race2"]          <- "polyreg"   # multinomial logistic regression
+
+# (Everything else stays "" meaning “passive”/leave as is)
+meth
+pred <- make.predictorMatrix(imp_df)
+
+# Remove self-prediction
+pred[c("Age", "PreHospNotify", "EMSvsCar", "Race2"),
+     c("Age", "PreHospNotify", "EMSvsCar", "Race2")] <- 0
+set.seed(123)
+
+imp <- mice(
+  data = imp_df,
+  m = 20,                # number of imputed datasets
+  method = meth,
+  predictorMatrix = pred,
+  maxit = 20,           # cycles
+  printFlag = TRUE
+)
+completed_df <- complete(imp, action = "long")
+# Or: complete(imp, 1) for the first filled-in dataset
+
+```
+
+
+```{r}
+plot(imp) 
+
+```
 
