@@ -20,7 +20,8 @@ library(naniar)
 #install.packages("kableExtra")
 library(kableExtra)
 library(mice)
-
+#install.packages("ResourceSelection")
+library(ResourceSelection)
 load("strokeStudy.RData")
 df <- x
 
@@ -252,7 +253,7 @@ miss_by_site %>%
   scale_fill_viridis_c(option = "plasma") +
   labs(title = "Missingness by Site",
        x = "Variable", y = "SiteID", fill = "% Missing") +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 
 
@@ -336,39 +337,39 @@ summary(model2_pooled)
 
 
 
-model1_table <- tidy(model1_pooled, conf.int = TRUE, exponentiate = TRUE) %>%
-  mutate(across(where(is.numeric), ~ round(., 3))) %>%
-  select(term, estimate, conf.low, conf.high, p.value) %>%
-  rename(
-    OR = estimate,
-    CI_low = conf.low,
-    CI_high = conf.high,
-    p = p.value
-  ) %>%
-  kbl(
-    caption = "Pooled Logistic Regression Results — Model 1 (Original Predictors)",
-    align = "c"
-  ) %>%
-  kable_classic(full_width = FALSE)
-
-model1_table
-
-model2_table <- tidy(model2_pooled, conf.int = TRUE, exponentiate = TRUE) %>%
-  mutate(across(where(is.numeric), ~ round(., 3))) %>%
-  select(term, estimate, conf.low, conf.high, p.value) %>%
-  rename(
-    OR = estimate,
-    CI_low = conf.low,
-    CI_high = conf.high,
-    p = p.value
-  ) %>%
-  kbl(
-    caption = "Pooled Logistic Regression Results — Model 2 (Phase + Combined Variables)",
-    align = "c"
-  ) %>%
-  kable_classic(full_width = FALSE)
-
-model2_table
+# model1_table <- tidy(model1_pooled, conf.int = TRUE, exponentiate = TRUE) %>%
+#   mutate(across(where(is.numeric), ~ round(., 3))) %>%
+#   select(term, estimate, conf.low, conf.high, p.value) %>%
+#   rename(
+#     OR = estimate,
+#     CI_low = conf.low,
+#     CI_high = conf.high,
+#     p = p.value
+#   ) %>%
+#   kbl(
+#     caption = "Pooled Logistic Regression Results — Model 1 (Original Predictors)",
+#     align = "c"
+#   ) %>%
+#   kable_classic(full_width = FALSE)
+# 
+# model1_table
+# 
+# model2_table <- tidy(model2_pooled, conf.int = TRUE, exponentiate = TRUE) %>%
+#   mutate(across(where(is.numeric), ~ round(., 3))) %>%
+#   select(term, estimate, conf.low, conf.high, p.value) %>%
+#   rename(
+#     OR = estimate,
+#     CI_low = conf.low,
+#     CI_high = conf.high,
+#     p = p.value
+#   ) %>%
+#   kbl(
+#     caption = "Pooled Logistic Regression Results — Model 2 (Phase + Combined Variables)",
+#     align = "c"
+#   ) %>%
+#   kable_classic(full_width = FALSE)
+# 
+# model2_table
 
 ```
 
@@ -401,6 +402,53 @@ mean(auc2)
 ```
 
 
+```{r}
+
+# First imputed model
+m1 <- model1_fit$analyses[[1]]
+data1 <- complete(imp, 1)
+
+data1$.fitted <- predict(m1, type = "link")
+data1$.resid <- residuals(m1, type = "deviance")
+data1$.cook <- cooks.distance(m1)
+data1$.lev <- hatvalues(m1)
+
+# Residuals vs fitted
+ggplot(data1, aes(.fitted, .resid)) +
+  geom_point(alpha = 0.4) +
+  geom_hline(yintercept = 0, color = "red") +
+  labs(title = "Deviance Residuals vs Fitted (Model 1)")
+
+# Cook's distance
+ggplot(data1, aes(seq_along(.cook), .cook)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 4/ nrow(data1), color = "red") +
+  labs(title = "Cook's Distance (Model 1)")
+
+
+
+
+hl_tests <- sapply(1:imp$m, function(i) {
+  data_i <- complete(imp, i)
+  m <- model1_fit$analyses[[i]]
+  p <- predict(m, newdata = data_i, type = "response")
+  hoslem.test(data_i$homeOrRehab, p, g = 10)$p.value
+})
+
+hl_tests
+mean(hl_tests)
+
+
+
+data_i <- complete(imp, 1)
+m <- model1_fit$analyses[[1]]
+p <- predict(m, newdata = data_i, type = "response")
+
+roc1 <- roc(data_i$homeOrRehab, p)
+plot(roc1, main = "ROC Curve for Model 1")
+auc(roc1)
+coords(roc1, "best", ret=c("threshold", "sensitivity", "specificity"))
+```
 
 
 
