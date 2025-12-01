@@ -3,40 +3,46 @@ title: "Bayesian Model for Stroke Outcomes"
 format: html
 editor: visual
 ---
-```{r}
+```{r, message=F, warning=FALSE}
 # install packages
-install.packages(c("R2jags", "rjags", "coda"))
-library(R2jags)
+install.packages(c("R2jags", "rjags", "coda", "dplyr"))
 library(rjags)
 library(coda)
 library(dplyr)
 set.seed(440)
-
+```
+```{r}
 # load data
 load("strokeStudy.RData")
-df <- strokeStudy
+df <- x
 ```
 
 ```{r}
 # outcome: 1 = home/rehab, 0 = other
-df$y <- ifelse(df$homeOrRehab, 1, 0)
+df$y <- ifelse(df$homeOrRehab == TRUE, 1, 0)
 df$site <- as.numeric(factor(df$siteID))
-J <- length(unique(df$site))
 df$program <- ifelse(df$Time2 >= 4, 1, 0)
+J <- length(unique(df$site))
 
 # covariates
-df$female <- ifelse(df$gender == "Female", 1, 0)
-df$ems    <- ifelse(df$EMSvsCar == "EMS", 1, 0)
-df$tpa    <- as.numeric(df$hadTPA)
-df$thr    <- as.numeric(df$hadThrombectomy)
+df$female <- ifelse(df$Gender == "Female", 1, 0)
+df$ems <- ifelse(df$EMSvsCar == "EMS", 1, 0)
+df$tpa <- ifelse(df$hadTPA == TRUE, 1, 0)
+df$thr <- ifelse(df$hadThrombectomy == TRUE, 1, 0)
 ```
 
 ```{r}
 # missing variables: drop remaining NAs for these variables
 vars_used <- c("y","site","program","Age","female","ems","tpa","thr")
-df_cc <- df %>% select(all_of(vars_used)) %>% na.omit()
-N <- nrow(df_cc)
 
+df_cc <- df[ , vars_used]   # select variables
+df_cc <- na.omit(df_cc)     # drop rows with NA
+
+N <- nrow(df_cc)
+J <- length(unique(df_cc$site))
+```
+
+```{r}
 # jags variables
 data_jags <- list(
   N = N,
@@ -44,30 +50,30 @@ data_jags <- list(
   y = df_cc$y,
   site = df_cc$site,
   program = df_cc$program,
-  age = scale(df_cc$Age)[,1], # scaling
+  age = as.numeric(scale(df_cc$Age)), # centering/scaling
   female = df_cc$female,
   ems = df_cc$ems,
   tpa = df_cc$tpa,
   thr = df_cc$thr
 )
 
-params <- c("beta0","beta_prog","beta_age","beta_female",
-            "beta_ems","beta_tpa","beta_thr",
-            "mu_alpha","sigma_alpha")
-inits <- function() {
-  list(
-    beta0 = 0,
-    beta_prog = 0,
-    beta_age = 0,
-    beta_female = 0,
-    beta_ems = 0,
-    beta_tpa = 0,
-    beta_thr = 0,
-    mu_alpha = 0,
-    sigma_alpha = 1,
-    alpha = rnorm(data_jags$J, 0, 0.1)
-  )
-}
+params <- c("beta0", "beta_prog", "beta_age", "beta_female",
+            "beta_ems", "beta_tpa", "beta_thr",
+            "mu_alpha", "sigma_alpha"
+)
+
+inits <- function() {list(
+  beta0 = 0,
+  beta_prog = 0,
+  beta_age = 0,
+  beta_female = 0,
+  beta_ems = 0,
+  beta_tpa = 0,
+  beta_thr = 0,
+  mu_alpha = 0,
+  sigma_alpha = 1,
+  alpha = rnorm(J, 0, 0.1)
+)}
 ```
 
 ```{r}
@@ -82,5 +88,6 @@ bayes_fit <- jags(
   n.burnin = 2000,
   n.thin = 2
 )
+
 print(bayes_fit)
 ```

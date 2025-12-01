@@ -3,18 +3,20 @@ model {
     y[i] ~ dbern(p[i])
     logit(p[i]) <- alpha[site[i]] +
                    beta0 +
-                   beta_prog * program[i] +
-                   beta_age  * age[i] +
+                   beta_prog   * program[i] +
+                   beta_age    * age[i] +
                    beta_female * female[i] +
-                   beta_ems * ems[i] +
-                   beta_tpa * tpa[i] +
-                   beta_thr * thr[i]
+                   beta_ems    * ems[i] +
+                   beta_tpa    * tpa[i] +
+                   beta_thr    * thr[i]
   }
 
+  # Random intercepts for sites
   for (j in 1:J) {
     alpha[j] ~ dnorm(mu_alpha, tau_alpha)
   }
 
+  # Priors
   beta0       ~ dnorm(0, 0.001)
   beta_prog   ~ dnorm(0, 0.001)
   beta_age    ~ dnorm(0, 0.001)
