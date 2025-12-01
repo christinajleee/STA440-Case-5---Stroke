@@ -3,8 +3,7 @@ title: "Bayesian Model for Stroke Outcomes"
 format: html
 editor: visual
 ---
-
-```{r setup, message=FALSE, warning=FALSE}
+```{r}
 # install packages
 install.packages(c("R2jags", "rjags", "coda"))
 library(R2jags)
@@ -16,7 +15,9 @@ set.seed(440)
 # load data
 load("strokeStudy.RData")
 df <- strokeStudy
+```
 
+```{r}
 # outcome: 1 = home/rehab, 0 = other
 df$y <- ifelse(df$homeOrRehab, 1, 0)
 df$site <- as.numeric(factor(df$siteID))
@@ -28,13 +29,15 @@ df$female <- ifelse(df$gender == "Female", 1, 0)
 df$ems    <- ifelse(df$EMSvsCar == "EMS", 1, 0)
 df$tpa    <- as.numeric(df$hadTPA)
 df$thr    <- as.numeric(df$hadThrombectomy)
+```
 
+```{r}
 # missing variables: drop remaining NAs for these variables
 vars_used <- c("y","site","program","Age","female","ems","tpa","thr")
 df_cc <- df %>% select(all_of(vars_used)) %>% na.omit()
-
 N <- nrow(df_cc)
 
+# jags variables
 data_jags <- list(
   N = N,
   J = J,
@@ -65,7 +68,10 @@ inits <- function() {
     alpha = rnorm(data_jags$J, 0, 0.1)
   )
 }
+```
 
+```{r}
+# bayesian model fit
 bayes_fit <- jags(
   data = data_jags,
   inits = inits,
@@ -77,3 +83,4 @@ bayes_fit <- jags(
   n.thin = 2
 )
 print(bayes_fit)
+```
