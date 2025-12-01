@@ -3,91 +3,677 @@ title: "Bayesian Model for Stroke Outcomes"
 format: html
 editor: visual
 ---
-```{r, message=F, warning=FALSE}
-# install packages
-install.packages(c("R2jags", "rjags", "coda", "dplyr"))
-library(rjags)
+```{r}
+# ---------------------------
+# Bayesian stroke model - corrected to match specification
+# ---------------------------
+
+# packages
+if (!requireNamespace("R2jags", quietly = TRUE)) install.packages("R2jags")
+if (!requireNamespace("coda", quietly = TRUE)) install.packages("coda")
+if (!requireNamespace("dplyr", quietly = TRUE)) install.packages("dplyr")
+if (!requireNamespace("pROC", quietly = TRUE)) install.packages("pROC")
+
+library(R2jags)
 library(coda)
 library(dplyr)
-set.seed(440)
-```
-```{r}
-# load data
-load("strokeStudy.RData")
-df <- x
-```
+library(pROC)
 
-```{r}
-# outcome: 1 = home/rehab, 0 = other
-df$y <- ifelse(df$homeOrRehab == TRUE, 1, 0)
-df$site <- as.numeric(factor(df$siteID))
-df$program <- ifelse(df$Time2 >= 4, 1, 0)
-J <- length(unique(df$site))
+# ---------- 0. load strokeStudy.RData correctly ----------
+obj_names <- load("strokeStudy.RData")
+message("Loaded objects: ", paste(obj_names, collapse = ", "))
 
-# covariates
-df$female <- ifelse(df$Gender == "Female", 1, 0)
-df$ems <- ifelse(df$EMSvsCar == "EMS", 1, 0)
-df$tpa <- ifelse(df$hadTPA == TRUE, 1, 0)
-df$thr <- ifelse(df$hadThrombectomy == TRUE, 1, 0)
-```
+if ("strokeStudy" %in% obj_names) {
+  strokeStudy <- get("strokeStudy")
+} else {
+  possible <- obj_names[sapply(obj_names, function(n) is.data.frame(get(n)))]
+  if (length(possible) == 0) stop("No data.frame found in strokeStudy.RData.")
+  strokeStudy <- get(possible[1])
+  message("Using object '", possible[1], "' as strokeStudy.")
+}
 
-```{r}
-# missing variables: drop remaining NAs for these variables
-vars_used <- c("y","site","program","Age","female","ems","tpa","thr")
+# ---------- 1. Data preparation matching YOUR model specification ----------
+df <- strokeStudy
 
-df_cc <- df[ , vars_used]   # select variables
-df_cc <- na.omit(df_cc)     # drop rows with NA
+# Ensure key columns exist
+required_cols <- c("homeOrRehab","siteID","Time2","Age","Gender","EMSvsCar","hadTPA","hadThrombectomy")
+missing_cols <- setdiff(required_cols, names(df))
+if (length(missing_cols) > 0) stop("Missing required columns: ", paste(missing_cols, collapse = ", "))
 
-N <- nrow(df_cc)
-J <- length(unique(df_cc$site))
-```
-
-```{r}
-# jags variables
-data_jags <- list(
-  N = N,
-  J = J,
-  y = df_cc$y,
-  site = df_cc$site,
-  program = df_cc$program,
-  age = as.numeric(scale(df_cc$Age)), # centering/scaling
-  female = df_cc$female,
-  ems = df_cc$ems,
-  tpa = df_cc$tpa,
-  thr = df_cc$thr
+# Outcome: Y_i = 1 if discharged home or to inpatient rehab, 0 otherwise
+df$y <- as.integer(
+  (is.logical(df$homeOrRehab) & df$homeOrRehab == TRUE) |
+  toupper(as.character(df$homeOrRehab)) %in% c("YES","HOME","TRUE","1")
 )
 
+# Site index
+df$site <- as.integer(factor(df$siteID))
+nSite <- length(unique(df$site))
+
+# Time as integer
+df$time <- as.integer(factor(df$Time2))
+
+# Program indicator: 1 if Time2 >= 4, 0 otherwise (matches your model: β_p*prog*Program_n*i)
+df$program <- as.integer(df$time >= 4)
+
+# Age: standardized (centered and scaled) - YOUR model shows this
+df$Age_num <- suppressWarnings(as.numeric(as.character(df$Age)))
+df$age_std <- as.numeric(scale(df$Age_num))  # Standardized age for better convergence
+
+# Female indicator
+df$female <- as.integer(toupper(as.character(df$Gender)) == "FEMALE")
+
+# EMS indicator
+df$EMS_chr <- toupper(as.character(df$EMSvsCar))
+df$ems <- as.integer(df$EMS_chr %in% c("EMS","1","TRUE","YES"))
+
+# Treatment indicators
+df$tpa <- as.integer(toupper(as.character(df$hadTPA)) %in% c("TRUE","1","YES"))
+df$thr <- as.integer(toupper(as.character(df$hadThrombectomy)) %in% c("TRUE","1","YES"))
+
+# Remove rows with missing values in key variables (complete case analysis)
+vars_needed <- c("y", "site", "program", "age_std", "female", "ems", "tpa", "thr")
+df_complete <- df[complete.cases(df[, vars_needed]), ]
+
+message("\nData summary:")
+message("Total rows in original data: ", nrow(df))
+message("Rows after removing missing values: ", nrow(df_complete))
+message("Number of sites: ", nSite)
+message("\nOutcome distribution:")
+print(table(df_complete$y, useNA = "ifany"))
+
+if (nrow(df_complete) == 0) stop("No complete cases available for analysis")
+
+# Create JAGS data list
+data_jags <- list(
+  N       = nrow(df_complete),
+  J       = nSite,
+  y       = df_complete$y,
+  site    = df_complete$site,
+  program = df_complete$program,
+  age     = df_complete$age_std,  # Standardized age
+  female  = df_complete$female,
+  ems     = df_complete$ems,
+  tpa     = df_complete$tpa,
+  thr     = df_complete$thr
+)
+
+# ---------- 2. JAGS model EXACTLY matching your specification ----------
+model_text <- "
+model {
+  # Likelihood: Y_i ~ Bernoulli(p_i)
+  # logit(p_i) = α_s*site[i] + β_0 + β_p*prog*Program_i + β_age*Age_i + 
+  #              β_female*Female_i + β_ems*EMS_i + β_tpa*TPA_i + β_thr*Thrombectomy_i
+  
+  for (i in 1:N) {
+    y[i] ~ dbern(p[i])
+    logit(p[i]) <- alpha[site[i]] + beta0 + 
+                   beta_prog * program[i] +
+                   beta_age * age[i] +
+                   beta_female * female[i] +
+                   beta_ems * ems[i] +
+                   beta_tpa * tpa[i] +
+                   beta_thr * thr[i]
+  }
+
+  # Site random intercepts: α_j ~ Normal(μ_α, σ_α²)
+  for (j in 1:J) {
+    alpha[j] ~ dnorm(mu_alpha, tau_alpha)
+  }
+
+  # Priors matching your specification:
+  # β_k ~ N(0, 10²) for all fixed effects k
+  beta0 ~ dnorm(0, 0.01)         # precision = 1/100 = 0.01
+  beta_prog ~ dnorm(0, 0.01)
+  beta_age ~ dnorm(0, 0.01)
+  beta_female ~ dnorm(0, 0.01)
+  beta_ems ~ dnorm(0, 0.01)
+  beta_tpa ~ dnorm(0, 0.01)
+  beta_thr ~ dnorm(0, 0.01)
+
+  # Hyperpriors:
+  # μ_α ~ Normal(0, 10²)
+  mu_alpha ~ dnorm(0, 0.01)
+  
+  # σ_α ~ Half-Normal(0, 2.5)
+  sigma_alpha ~ dnorm(0, 0.16) T(0,)  # precision = 1/(2.5²) = 0.16, truncated at 0
+  tau_alpha <- pow(sigma_alpha, -2)
+}
+"
+cat(model_text, file = "stroke_model_corrected.jags")
+message("Wrote stroke_model_corrected.jags")
+
+# ---------- 3. Initial values function ----------
+inits_fn <- function() {
+  list(
+    beta0 = rnorm(1, 0, 0.1),
+    beta_prog = rnorm(1, 0, 0.1),
+    beta_age = rnorm(1, 0, 0.1),
+    beta_female = rnorm(1, 0, 0.1),
+    beta_ems = rnorm(1, 0, 0.1),
+    beta_tpa = rnorm(1, 0, 0.1),
+    beta_thr = rnorm(1, 0, 0.1),
+    mu_alpha = rnorm(1, 0, 0.5),
+    sigma_alpha = runif(1, 0.1, 2),
+    alpha = rnorm(data_jags$J, 0, 0.5)
+  )
+}
+
+# Parameters to save
 params <- c("beta0", "beta_prog", "beta_age", "beta_female",
             "beta_ems", "beta_tpa", "beta_thr",
-            "mu_alpha", "sigma_alpha"
-)
+            "mu_alpha", "sigma_alpha", "alpha")
 
-inits <- function() {list(
-  beta0 = 0,
-  beta_prog = 0,
-  beta_age = 0,
-  beta_female = 0,
-  beta_ems = 0,
-  beta_tpa = 0,
-  beta_thr = 0,
-  mu_alpha = 0,
-  sigma_alpha = 1,
-  alpha = rnorm(J, 0, 0.1)
-)}
-```
+# ---------- 4. Run JAGS with your MCMC specifications ----------
+# Your spec: 4 chains; 5K iter/chain; 2K burn-in
+set.seed(440)
+message("\nRunning JAGS (4 chains, 5000 iterations, 2000 burn-in)...\n")
 
-```{r}
-# bayesian model fit
-bayes_fit <- jags(
+jags_out <- jags(
   data = data_jags,
-  inits = inits,
+  inits = inits_fn,
   parameters.to.save = params,
-  model.file = "bayesian_model.jags",
-  n.chains = 4,
-  n.iter = 5000,
-  n.burnin = 2000,
-  n.thin = 2
+  model.file = "stroke_model_corrected.jags",
+n.chains = 4,
+n.iter = 20000,    # Increase from 5000
+n.burnin = 10000,  # Increase from 2000
+n.thin = 5,         # Increase thinning
+  DIC = TRUE,
+  progress.bar = "text"
 )
 
-print(bayes_fit)
+print(jags_out)
+
+# ---------- 5. Convergence diagnostics ----------
+sims <- as.mcmc(jags_out)
+sims_mat <- as.matrix(sims)
+
+cat("\n=== CONVERGENCE DIAGNOSTICS ===\n")
+cat("\n--- Gelman-Rubin diagnostics (Rhat, should be < 1.1) ---\n")
+gelman_diag <- gelman.diag(sims, multivariate = FALSE)
+print(gelman_diag)
+
+psrf_values <- gelman_diag$psrf[,1]
+if (any(psrf_values > 1.1, na.rm = TRUE)) {
+  warning("Some parameters have Rhat > 1.1. Consider longer chains.")
+  cat("\nParameters with poor convergence (Rhat > 1.1):\n")
+  print(psrf_values[psrf_values > 1.1])
+}
+
+cat("\n--- Effective sample sizes ---\n")
+ess <- effectiveSize(sims)
+print(head(ess, 20))
+
+if (any(ess < 400, na.rm = TRUE)) {
+  warning("Some parameters have ESS < 400. Consider more iterations.")
+}
+
+# ---------- 6. Posterior summaries ----------
+cat("\n=== POSTERIOR SUMMARIES ===\n")
+cat("\nFixed Effects:\n")
+fixed_effects <- c("beta0", "beta_prog", "beta_age", "beta_female", 
+                   "beta_ems", "beta_tpa", "beta_thr")
+print(summary(sims[, fixed_effects]))
+
+cat("\nHyperparameters:\n")
+print(summary(sims[, c("mu_alpha", "sigma_alpha")]))
+
+cat("\n95% Credible Intervals (Fixed Effects):\n")
+for (param in fixed_effects) {
+  ci <- quantile(sims_mat[, param], probs = c(0.025, 0.975))
+  pm <- mean(sims_mat[, param])
+  cat(sprintf("%12s: %7.3f  [%7.3f, %7.3f]\n", param, pm, ci[1], ci[2]))
+}
+
+# ---------- 7. Predicted probabilities (posterior mean) ----------
+alpha_names <- grep("^alpha\\[", colnames(sims_mat), value = TRUE)
+alpha_pm <- colMeans(sims_mat[, alpha_names, drop = FALSE])
+
+beta0_pm <- mean(sims_mat[, "beta0"])
+beta_prog_pm <- mean(sims_mat[, "beta_prog"])
+beta_age_pm <- mean(sims_mat[, "beta_age"])
+beta_female_pm <- mean(sims_mat[, "beta_female"])
+beta_ems_pm <- mean(sims_mat[, "beta_ems"])
+beta_tpa_pm <- mean(sims_mat[, "beta_tpa"])
+beta_thr_pm <- mean(sims_mat[, "beta_thr"])
+
+# Compute linear predictor using posterior means
+linpred_pm <- beta0_pm + alpha_pm[data_jags$site] +
+              beta_prog_pm * data_jags$program +
+              beta_age_pm * data_jags$age +
+              beta_female_pm * data_jags$female +
+              beta_ems_pm * data_jags$ems +
+              beta_tpa_pm * data_jags$tpa +
+              beta_thr_pm * data_jags$thr
+
+p_pm <- plogis(linpred_pm)
+df_complete$pred_prob_postmean <- p_pm
+
+cat("\n=== MODEL PERFORMANCE ===\n")
+cat("Predicted probability summary:\n")
+print(summary(p_pm))
+
+# AUC
+roc_obj <- roc(df_complete$y, df_complete$pred_prob_postmean, quiet = TRUE)
+auc_val <- auc(roc_obj)
+cat("\nAUC (posterior mean predictions): ", round(auc_val, 4), "\n")
+
+# ---------- 8. Save results ----------
+saveRDS(jags_out, file = "stroke_jags_fit_corrected.rds")
+saveRDS(df_complete, file = "stroke_with_preds_corrected.rds")
+saveRDS(list(
+  posterior_means = list(
+    beta0 = beta0_pm,
+    beta_prog = beta_prog_pm,
+    beta_age = beta_age_pm,
+    beta_female = beta_female_pm,
+    beta_ems = beta_ems_pm,
+    beta_tpa = beta_tpa_pm,
+    beta_thr = beta_thr_pm,
+    mu_alpha = mean(sims_mat[, "mu_alpha"]),
+    sigma_alpha = mean(sims_mat[, "sigma_alpha"])
+  ),
+  credible_intervals = sapply(fixed_effects, function(p) {
+    quantile(sims_mat[, p], probs = c(0.025, 0.975))
+  }),
+  auc = auc_val,
+  convergence = gelman_diag,
+  ess = ess
+), file = "model_results_corrected.rds")
+
+message("\n=== ANALYSIS COMPLETE ===")
+message("Files saved:")
+message("  stroke_jags_fit_corrected.rds")
+message("  stroke_with_preds_corrected.rds")
+message("  model_results_corrected.rds")
+
 ```
+```{r}
+# =============================================================================
+# Comprehensive JAGS Model Diagnostics
+# =============================================================================
+
+# Load necessary packages
+library(R2jags)
+library(coda)
+library(ggplot2)
+library(gridExtra)
+library(pROC)
+
+# ---------- 1. Load saved results ----------
+jags_out <- readRDS("stroke_jags_fit_corrected.rds")
+df_complete <- readRDS("stroke_with_preds_corrected.rds")
+
+# Convert to mcmc object
+sims <- as.mcmc(jags_out)
+sims_mat <- as.matrix(sims)
+
+# =============================================================================
+# PART 1: MCMC DIAGNOSTICS (Trace Plots, ACF Plots, Density Plots)
+# =============================================================================
+
+# ---------- Trace Plots for Fixed Effects ----------
+cat("\n=== Creating trace plots for fixed effects ===\n")
+
+fixed_params <- c("beta0", "beta_prog", "beta_age", "beta_female", 
+                  "beta_ems", "beta_tpa", "beta_thr")
+
+pdf("trace_plots_fixed_effects.pdf", width = 12, height = 10)
+par(mfrow = c(4, 2), mar = c(4, 4, 2, 1))
+for (param in fixed_params) {
+  traceplot(sims[, param], main = paste("Trace Plot:", param),
+            ylab = param, col = c("red", "blue", "green", "purple"))
+}
+dev.off()
+message("Saved: trace_plots_fixed_effects.pdf")
+
+# ---------- Trace Plots for Hyperparameters ----------
+pdf("trace_plots_hyperparameters.pdf", width = 12, height = 6)
+par(mfrow = c(1, 2), mar = c(4, 4, 2, 1))
+traceplot(sims[, "mu_alpha"], main = "Trace Plot: mu_alpha",
+          col = c("red", "blue", "green", "purple"))
+traceplot(sims[, "sigma_alpha"], main = "Trace Plot: sigma_alpha",
+          col = c("red", "blue", "green", "purple"))
+dev.off()
+message("Saved: trace_plots_hyperparameters.pdf")
+
+# ---------- ACF Plots for Fixed Effects ----------
+cat("\n=== Creating ACF plots for fixed effects ===\n")
+
+pdf("acf_plots_fixed_effects.pdf", width = 12, height = 10)
+par(mfrow = c(4, 2), mar = c(4, 4, 2, 1))
+for (param in fixed_params) {
+  acf(sims_mat[, param], main = paste("ACF:", param), lag.max = 50)
+}
+dev.off()
+message("Saved: acf_plots_fixed_effects.pdf")
+
+# ---------- Density Plots (Posterior Distributions) ----------
+pdf("posterior_densities_fixed_effects.pdf", width = 12, height = 10)
+par(mfrow = c(4, 2), mar = c(4, 4, 2, 1))
+for (param in fixed_params) {
+  densplot(sims[, param], main = paste("Posterior Density:", param),
+           col = c("red", "blue", "green", "purple"))
+  abline(v = 0, lty = 2, col = "black", lwd = 2)
+}
+dev.off()
+message("Saved: posterior_densities_fixed_effects.pdf")
+
+# =============================================================================
+# PART 2: GOODNESS OF FIT - RESIDUAL DIAGNOSTICS
+# =============================================================================
+
+cat("\n=== Computing residuals and fitted values ===\n")
+
+# Extract posterior means for all parameters
+alpha_names <- grep("^alpha\\[", colnames(sims_mat), value = TRUE)
+alpha_pm <- colMeans(sims_mat[, alpha_names, drop = FALSE])
+
+beta0_pm <- mean(sims_mat[, "beta0"])
+beta_prog_pm <- mean(sims_mat[, "beta_prog"])
+beta_age_pm <- mean(sims_mat[, "beta_age"])
+beta_female_pm <- mean(sims_mat[, "beta_female"])
+beta_ems_pm <- mean(sims_mat[, "beta_ems"])
+beta_tpa_pm <- mean(sims_mat[, "beta_tpa"])
+beta_thr_pm <- mean(sims_mat[, "beta_thr"])
+
+# Compute fitted linear predictor
+linpred <- beta0_pm + alpha_pm[df_complete$site] +
+           beta_prog_pm * df_complete$program +
+           beta_age_pm * df_complete$age_std +
+           beta_female_pm * df_complete$female +
+           beta_ems_pm * df_complete$ems +
+           beta_tpa_pm * df_complete$tpa +
+           beta_thr_pm * df_complete$thr
+
+# Fitted probabilities
+fitted_prob <- plogis(linpred)
+
+# Compute different types of residuals
+# 1. Response residuals (observed - fitted)
+response_resid <- df_complete$y - fitted_prob
+
+# 2. Deviance residuals
+sign_resid <- ifelse(df_complete$y == 1, 1, -1)
+deviance_resid <- sign_resid * sqrt(-2 * (df_complete$y * log(fitted_prob + 1e-10) + 
+                                           (1 - df_complete$y) * log(1 - fitted_prob + 1e-10)))
+
+# 3. Pearson residuals
+pearson_resid <- (df_complete$y - fitted_prob) / sqrt(fitted_prob * (1 - fitted_prob) + 1e-10)
+
+# Add to dataframe
+df_complete$fitted_prob <- fitted_prob
+df_complete$response_resid <- response_resid
+df_complete$deviance_resid <- deviance_resid
+df_complete$pearson_resid <- pearson_resid
+df_complete$linpred <- linpred
+
+# ---------- Residual Plots ----------
+cat("\n=== Creating residual plots ===\n")
+
+pdf("residual_plots.pdf", width = 14, height = 10)
+par(mfrow = c(2, 3), mar = c(4, 4, 2, 1))
+
+# 1. Deviance residuals vs fitted values
+plot(fitted_prob, deviance_resid, 
+     xlab = "Fitted Probability", ylab = "Deviance Residuals",
+     main = "Deviance Residuals vs Fitted",
+     pch = 16, col = rgb(0, 0, 0, 0.3))
+abline(h = 0, col = "red", lwd = 2, lty = 2)
+lowess_fit <- lowess(fitted_prob, deviance_resid)
+lines(lowess_fit, col = "blue", lwd = 2)
+
+# 2. Pearson residuals vs fitted values
+plot(fitted_prob, pearson_resid,
+     xlab = "Fitted Probability", ylab = "Pearson Residuals",
+     main = "Pearson Residuals vs Fitted",
+     pch = 16, col = rgb(0, 0, 0, 0.3))
+abline(h = 0, col = "red", lwd = 2, lty = 2)
+lowess_fit2 <- lowess(fitted_prob, pearson_resid)
+lines(lowess_fit2, col = "blue", lwd = 2)
+
+# 3. Residuals vs linear predictor
+plot(linpred, deviance_resid,
+     xlab = "Linear Predictor", ylab = "Deviance Residuals",
+     main = "Residuals vs Linear Predictor",
+     pch = 16, col = rgb(0, 0, 0, 0.3))
+abline(h = 0, col = "red", lwd = 2, lty = 2)
+
+# 4. Residuals vs Age
+plot(df_complete$age_std, deviance_resid,
+     xlab = "Age (standardized)", ylab = "Deviance Residuals",
+     main = "Residuals vs Age",
+     pch = 16, col = rgb(0, 0, 0, 0.3))
+abline(h = 0, col = "red", lwd = 2, lty = 2)
+lowess_fit3 <- lowess(df_complete$age_std, deviance_resid)
+lines(lowess_fit3, col = "blue", lwd = 2)
+
+# 5. Residuals by Program
+boxplot(deviance_resid ~ df_complete$program,
+        xlab = "Program (0=Before, 1=After)", ylab = "Deviance Residuals",
+        main = "Residuals by Program Period",
+        col = c("lightblue", "lightgreen"))
+abline(h = 0, col = "red", lwd = 2, lty = 2)
+
+# 6. Residuals by Site
+boxplot(deviance_resid ~ df_complete$site,
+        xlab = "Site", ylab = "Deviance Residuals",
+        main = "Residuals by Site",
+        col = rainbow(length(unique(df_complete$site))))
+abline(h = 0, col = "red", lwd = 2, lty = 2)
+
+dev.off()
+message("Saved: residual_plots.pdf")
+
+# ---------- QQ Plots ----------
+cat("\n=== Creating QQ plots ===\n")
+
+pdf("qq_plots.pdf", width = 12, height = 8)
+par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+
+# QQ plot for deviance residuals
+qqnorm(deviance_resid, main = "QQ Plot: Deviance Residuals",
+       pch = 16, col = rgb(0, 0, 0, 0.5))
+qqline(deviance_resid, col = "red", lwd = 2)
+
+# QQ plot for Pearson residuals
+qqnorm(pearson_resid, main = "QQ Plot: Pearson Residuals",
+       pch = 16, col = rgb(0, 0, 0, 0.5))
+qqline(pearson_resid, col = "red", lwd = 2)
+
+# Histogram of deviance residuals
+hist(deviance_resid, breaks = 30, col = "lightblue", border = "white",
+     main = "Distribution of Deviance Residuals",
+     xlab = "Deviance Residuals", freq = FALSE)
+curve(dnorm(x, mean(deviance_resid), sd(deviance_resid)), 
+      add = TRUE, col = "red", lwd = 2)
+
+# Histogram of Pearson residuals
+hist(pearson_resid, breaks = 30, col = "lightgreen", border = "white",
+     main = "Distribution of Pearson Residuals",
+     xlab = "Pearson Residuals", freq = FALSE)
+curve(dnorm(x, mean(pearson_resid), sd(pearson_resid)), 
+      add = TRUE, col = "red", lwd = 2)
+
+dev.off()
+message("Saved: qq_plots.pdf")
+
+# =============================================================================
+# PART 3: MODEL PERFORMANCE METRICS
+# =============================================================================
+
+cat("\n=== Computing model performance metrics ===\n")
+
+# ROC Curve and AUC
+roc_obj <- roc(df_complete$y, df_complete$fitted_prob, quiet = TRUE)
+auc_val <- auc(roc_obj)
+
+pdf("roc_curve.pdf", width = 8, height = 8)
+plot(roc_obj, main = paste0("ROC Curve (AUC = ", round(auc_val, 3), ")"),
+     col = "blue", lwd = 2, print.auc = TRUE, print.auc.y = 0.4)
+abline(a = 0, b = 1, lty = 2, col = "red")
+dev.off()
+message("Saved: roc_curve.pdf")
+
+# Confusion matrix at 0.5 threshold
+pred_class <- ifelse(fitted_prob > 0.5, 1, 0)
+conf_mat <- table(Predicted = pred_class, Actual = df_complete$y)
+
+# Calculate metrics
+accuracy <- sum(diag(conf_mat)) / sum(conf_mat)
+sensitivity <- conf_mat[2, 2] / sum(conf_mat[, 2])
+specificity <- conf_mat[1, 1] / sum(conf_mat[, 1])
+ppv <- conf_mat[2, 2] / sum(conf_mat[2, ])
+npv <- conf_mat[1, 1] / sum(conf_mat[1, ])
+
+# Hosmer-Lemeshow style calibration plot
+df_complete$prob_bin <- cut(fitted_prob, breaks = 10, include.lowest = TRUE)
+calibration_data <- df_complete %>%
+  group_by(prob_bin) %>%
+  summarise(
+    observed = mean(y),
+    predicted = mean(fitted_prob),
+    n = n()
+  )
+
+pdf("calibration_plot.pdf", width = 8, height = 8)
+plot(calibration_data$predicted, calibration_data$observed,
+     xlim = c(0, 1), ylim = c(0, 1),
+     xlab = "Predicted Probability", ylab = "Observed Proportion",
+     main = "Calibration Plot",
+     pch = 16, cex = sqrt(calibration_data$n) / 3,
+     col = "blue")
+abline(a = 0, b = 1, col = "red", lwd = 2, lty = 2)
+text(0.7, 0.2, paste("AUC =", round(auc_val, 3)), cex = 1.5)
+dev.off()
+message("Saved: calibration_plot.pdf")
+
+# =============================================================================
+# PART 4: SUMMARY STATISTICS AND DIAGNOSTICS TABLE
+# =============================================================================
+
+cat("\n=== MODEL PERFORMANCE SUMMARY ===\n")
+cat("AUC: ", round(auc_val, 4), "\n")
+cat("Accuracy: ", round(accuracy, 4), "\n")
+cat("Sensitivity: ", round(sensitivity, 4), "\n")
+cat("Specificity: ", round(specificity, 4), "\n")
+cat("PPV: ", round(ppv, 4), "\n")
+cat("NPV: ", round(npv, 4), "\n\n")
+
+cat("Confusion Matrix:\n")
+print(conf_mat)
+
+cat("\n=== RESIDUAL DIAGNOSTICS SUMMARY ===\n")
+cat("Deviance Residuals:\n")
+print(summary(deviance_resid))
+cat("\nPearson Residuals:\n")
+print(summary(pearson_resid))
+
+# Shapiro-Wilk test for normality (on sample if n > 5000)
+if (length(deviance_resid) <= 5000) {
+  shapiro_test <- shapiro.test(deviance_resid)
+  cat("\nShapiro-Wilk test for deviance residuals: p =", shapiro_test$p.value, "\n")
+} else {
+  sample_resid <- sample(deviance_resid, 5000)
+  shapiro_test <- shapiro.test(sample_resid)
+  cat("\nShapiro-Wilk test (sample) for deviance residuals: p =", shapiro_test$p.value, "\n")
+}
+
+# =============================================================================
+# PART 5: POSTERIOR PREDICTIVE CHECKS
+# =============================================================================
+
+cat("\n=== Posterior Predictive Checks ===\n")
+
+# Simulate new data from posterior
+n_sim <- 100
+n_obs <- nrow(df_complete)
+y_rep <- matrix(NA, n_sim, n_obs)
+
+# Sample from posterior
+post_sample_idx <- sample(nrow(sims_mat), n_sim)
+
+for (i in 1:n_sim) {
+  idx <- post_sample_idx[i]
+  
+  beta0_s <- sims_mat[idx, "beta0"]
+  beta_prog_s <- sims_mat[idx, "beta_prog"]
+  beta_age_s <- sims_mat[idx, "beta_age"]
+  beta_female_s <- sims_mat[idx, "beta_female"]
+  beta_ems_s <- sims_mat[idx, "beta_ems"]
+  beta_tpa_s <- sims_mat[idx, "beta_tpa"]
+  beta_thr_s <- sims_mat[idx, "beta_thr"]
+  alpha_s <- sims_mat[idx, alpha_names]
+  
+  linpred_s <- beta0_s + alpha_s[df_complete$site] +
+               beta_prog_s * df_complete$program +
+               beta_age_s * df_complete$age_std +
+               beta_female_s * df_complete$female +
+               beta_ems_s * df_complete$ems +
+               beta_tpa_s * df_complete$tpa +
+               beta_thr_s * df_complete$thr
+  
+  prob_s <- plogis(linpred_s)
+  y_rep[i, ] <- rbinom(n_obs, 1, prob_s)
+}
+
+# Compare observed vs replicated data
+pdf("posterior_predictive_checks.pdf", width = 12, height = 8)
+par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+
+# 1. Distribution of outcomes
+hist(df_complete$y, breaks = 2, col = rgb(1, 0, 0, 0.5), 
+     main = "Observed vs Predicted Outcomes",
+     xlab = "Outcome", xlim = c(-0.5, 1.5), freq = FALSE)
+for (i in 1:20) {
+  hist(y_rep[i, ], breaks = 2, add = TRUE, col = rgb(0, 0, 1, 0.05), freq = FALSE)
+}
+legend("topright", c("Observed", "Replicated"), 
+       fill = c(rgb(1, 0, 0, 0.5), rgb(0, 0, 1, 0.2)))
+
+# 2. Mean check
+mean_y_rep <- rowMeans(y_rep)
+hist(mean_y_rep, col = "lightblue", border = "white",
+     main = "Posterior Predictive Check: Mean",
+     xlab = "Mean of Replicated Data")
+abline(v = mean(df_complete$y), col = "red", lwd = 3)
+legend("topright", "Observed Mean", col = "red", lwd = 3)
+
+# 3. SD check
+sd_y_rep <- apply(y_rep, 1, sd)
+hist(sd_y_rep, col = "lightgreen", border = "white",
+     main = "Posterior Predictive Check: SD",
+     xlab = "SD of Replicated Data")
+abline(v = sd(df_complete$y), col = "red", lwd = 3)
+legend("topright", "Observed SD", col = "red", lwd = 3)
+
+# 4. Proportion check
+prop_y_rep <- rowMeans(y_rep)
+hist(prop_y_rep, col = "lightyellow", border = "white",
+     main = "Posterior Predictive Check: Proportion",
+     xlab = "Proportion of 1's in Replicated Data")
+abline(v = mean(df_complete$y), col = "red", lwd = 3)
+legend("topright", "Observed Proportion", col = "red", lwd = 3)
+
+dev.off()
+message("Saved: posterior_predictive_checks.pdf")
+
+# =============================================================================
+# FINAL SUMMARY
+# =============================================================================
+
+cat("\n=== ALL DIAGNOSTIC PLOTS CREATED ===\n")
+cat("Files saved:\n")
+cat("  1. trace_plots_fixed_effects.pdf\n")
+cat("  2. trace_plots_hyperparameters.pdf\n")
+cat("  3. acf_plots_fixed_effects.pdf\n")
+cat("  4. posterior_densities_fixed_effects.pdf\n")
+cat("  5. residual_plots.pdf\n")
+cat("  6. qq_plots.pdf\n")
+cat("  7. roc_curve.pdf\n")
+cat("  8. calibration_plot.pdf\n")
+cat("  9. posterior_predictive_checks.pdf\n")
+cat("\nDiagnostics complete!\n")
+```
+
+

@@ -1,33 +1,70 @@
+
 model {
+
   # Likelihood
   for (i in 1:N) {
+
+    # Outcome model
     y[i] ~ dbern(p[i])
-    logit(p[i]) <- alpha[site[i]] +
-                   beta0 +
-                   beta_prog   * program[i] +
-                   beta_age    * age[i] +
-                   beta_female * female[i] +
+
+    logit(p[i]) <- alpha_site[site[i]] +
+                   beta_age    * Age[i] +
+                   beta_female * gender[i] +
+                   beta_race2  * equals(race[i], 2) +
+                   beta_race3  * equals(race[i], 3) +
                    beta_ems    * ems[i] +
-                   beta_tpa    * tpa[i] +
-                   beta_thr    * thr[i]
+                   beta_preh   * prehosp[i] +
+                   beta_thr    * hadThr[i] +
+                   beta_tpa    * hadTPA[i] +
+                   beta_tpaC   * tpaComp[i] +
+                   beta_thrC   * thrComp[i] +
+                   time_eff[time[i]]
+
+    # Models for variables with missing entries (imputation inside JAGS)
+    Age[i]  ~ dnorm(mu_age, tau_age)
+    race[i] ~ dcat(pi[1:nRace])
+    ems[i]  ~ dbern(theta_ems)
+    prehosp[i] ~ dbern(theta_preh)
   }
 
-  # Random intercepts for sites
-  for (j in 1:J) {
-    alpha[j] ~ dnorm(mu_alpha, tau_alpha)
+  # Site random intercepts
+  for (j in 1:nSite) {
+    alpha_site[j] ~ dnorm(mu_alpha, tau_alpha)
   }
-
-  # Priors for fixed effects
-  beta0       ~ dnorm(0, 0.001)
-  beta_prog   ~ dnorm(0, 0.001)
-  beta_age    ~ dnorm(0, 0.001)
-  beta_female ~ dnorm(0, 0.001)
-  beta_ems    ~ dnorm(0, 0.001)
-  beta_tpa    ~ dnorm(0, 0.001)
-  beta_thr    ~ dnorm(0, 0.001)
-
-  # Priors for random effect hyperparameters
-  mu_alpha    ~ dnorm(0, 0.001)
-  sigma_alpha ~ dunif(0, 5)
+  mu_alpha    ~ dnorm(0, 1.0E-4)
+  sigma_alpha ~ dunif(0, 10)
   tau_alpha   <- pow(sigma_alpha, -2)
+
+  # Time effects
+  for (k in 1:nTime) {
+    time_eff[k] ~ dnorm(0, 1.0E-4)
+  }
+
+  # Regression coefficients
+  beta_age    ~ dnorm(0, 1.0E-4)
+  beta_female ~ dnorm(0, 1.0E-4)
+  beta_race2  ~ dnorm(0, 1.0E-4)
+  beta_race3  ~ dnorm(0, 1.0E-4)
+  beta_ems    ~ dnorm(0, 1.0E-4)
+  beta_preh   ~ dnorm(0, 1.0E-4)
+  beta_thr    ~ dnorm(0, 1.0E-4)
+  beta_tpa    ~ dnorm(0, 1.0E-4)
+  beta_tpaC   ~ dnorm(0, 1.0E-4)
+  beta_thrC   ~ dnorm(0, 1.0E-4)
+
+  # Age distribution hyperpriors
+  mu_age    ~ dnorm(60, 1.0E-4)
+  sigma_age ~ dunif(0, 30)
+  tau_age   <- pow(sigma_age, -2)
+
+  # Race distribution
+  for (r in 1:nRace) {
+    alpha_race[r] <- 1
+  }
+  pi[1:nRace] ~ ddirch(alpha_race[1:nRace])
+
+  # EMS + PreHospNotify prevalences
+  theta_ems  ~ dbeta(1, 1)
+  theta_preh ~ dbeta(1, 1)
+
 }

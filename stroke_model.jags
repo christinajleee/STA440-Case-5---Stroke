@@ -1,0 +1,59 @@
+
+model {
+  # Likelihood: logistic regression with site random intercepts and time effects
+  for (i in 1:N) {
+    y[i] ~ dbern(p[i])
+    logit(p[i]) <- beta0 + alpha[site[i]] + beta_prog * (time[i] >= 4) + beta_age * Age[i] +
+                   beta_female * female[i] + beta_ems * ems[i] + beta_tpa * tpa[i] + beta_thr * thr[i]
+
+    # Imputation submodels for variables with missing values:
+    # Age (continuous)
+    Age[i] ~ dnorm(mu_age, tau_age)
+
+    # race (categorical 1..nRace)
+    race[i] ~ dcat(pi[1:nRace])
+
+    # ems (binary)
+    ems[i] ~ dbern(theta_ems)
+
+    # prehospital notification (binary, 1 = No, 0 = Yes)
+    prehosp[i] ~ dbern(theta_preh)
+  }
+
+  # Site random intercepts
+  for (j in 1:nSite) {
+    alpha[j] ~ dnorm(mu_alpha, tau_alpha)
+  }
+  mu_alpha ~ dnorm(0, 0.001)
+  sigma_alpha ~ dunif(0, 10)
+  tau_alpha <- pow(sigma_alpha, -2)
+
+  # time effects (weakly informative centered at 0, one per time level)
+  for (t in 1:nTime) {
+    time_eff[t] ~ dnorm(0, 0.001)
+  }
+
+  # Priors for regression betas
+  beta0 ~ dnorm(0, 0.001)
+  beta_prog ~ dnorm(0, 0.001)
+  beta_age ~ dnorm(0, 0.001)
+  beta_female ~ dnorm(0, 0.001)
+  beta_ems ~ dnorm(0, 0.001)
+  beta_tpa ~ dnorm(0, 0.001)
+  beta_thr ~ dnorm(0, 0.001)
+
+  # Age imputation hyperpriors
+  mu_age ~ dnorm(60, 0.001)
+  sigma_age ~ dunif(0, 50)
+  tau_age <- pow(sigma_age, -2)
+
+  # Race categorical prior
+  for (r in 1:nRace) {
+    alpha_r[r] <- 1
+  }
+  pi[1:nRace] ~ ddirch(alpha_r[1:nRace])
+
+  # Prevalences for ems and prehosp
+  theta_ems ~ dbeta(1, 1)
+  theta_preh ~ dbeta(1, 1)
+}
