@@ -1,0 +1,79 @@
+---
+title: "Bayesian Model for Stroke Outcomes"
+format: html
+editor: visual
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+# install packages
+install.packages(c("R2jags", "rjags", "coda"))
+library(R2jags)
+library(rjags)
+library(coda)
+library(dplyr)
+set.seed(440)
+
+# load data
+load("strokeStudy.RData")
+df <- strokeStudy
+
+# outcome: 1 = home/rehab, 0 = other
+df$y <- ifelse(df$homeOrRehab, 1, 0)
+df$site <- as.numeric(factor(df$siteID))
+J <- length(unique(df$site))
+df$program <- ifelse(df$Time2 >= 4, 1, 0)
+
+# covariates
+df$female <- ifelse(df$gender == "Female", 1, 0)
+df$ems    <- ifelse(df$EMSvsCar == "EMS", 1, 0)
+df$tpa    <- as.numeric(df$hadTPA)
+df$thr    <- as.numeric(df$hadThrombectomy)
+
+# missing variables: drop remaining NAs for these variables
+vars_used <- c("y","site","program","Age","female","ems","tpa","thr")
+df_cc <- df %>% select(all_of(vars_used)) %>% na.omit()
+
+N <- nrow(df_cc)
+
+data_jags <- list(
+  N = N,
+  J = J,
+  y = df_cc$y,
+  site = df_cc$site,
+  program = df_cc$program,
+  age = scale(df_cc$Age)[,1], # scaling
+  female = df_cc$female,
+  ems = df_cc$ems,
+  tpa = df_cc$tpa,
+  thr = df_cc$thr
+)
+
+params <- c("beta0","beta_prog","beta_age","beta_female",
+            "beta_ems","beta_tpa","beta_thr",
+            "mu_alpha","sigma_alpha")
+inits <- function() {
+  list(
+    beta0 = 0,
+    beta_prog = 0,
+    beta_age = 0,
+    beta_female = 0,
+    beta_ems = 0,
+    beta_tpa = 0,
+    beta_thr = 0,
+    mu_alpha = 0,
+    sigma_alpha = 1,
+    alpha = rnorm(data_jags$J, 0, 0.1)
+  )
+}
+
+bayes_fit <- jags(
+  data = data_jags,
+  inits = inits,
+  parameters.to.save = params,
+  model.file = "bayesian_model.jags",
+  n.chains = 4,
+  n.iter = 5000,
+  n.burnin = 2000,
+  n.thin = 2
+)
+print(bayes_fit)
