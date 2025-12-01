@@ -1,4 +1,5 @@
 model {
+  # Likelihood
   for (i in 1:N) {
     y[i] ~ dbern(p[i])
     logit(p[i]) <- alpha[site[i]] +
@@ -16,7 +17,7 @@ model {
     alpha[j] ~ dnorm(mu_alpha, tau_alpha)
   }
 
-  # Priors
+  # Priors for fixed effects
   beta0       ~ dnorm(0, 0.001)
   beta_prog   ~ dnorm(0, 0.001)
   beta_age    ~ dnorm(0, 0.001)
@@ -25,6 +26,7 @@ model {
   beta_tpa    ~ dnorm(0, 0.001)
   beta_thr    ~ dnorm(0, 0.001)
 
+  # Priors for random effect hyperparameters
   mu_alpha    ~ dnorm(0, 0.001)
   sigma_alpha ~ dunif(0, 5)
   tau_alpha   <- pow(sigma_alpha, -2)
