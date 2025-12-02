@@ -1,6 +1,6 @@
 ---
 title: "Bayesian Model for Stroke Outcomes"
-format: html
+format: pdf
 editor: visual
 ---
 
