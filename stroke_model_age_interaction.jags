@@ -1,0 +1,58 @@
+
+model {
+  # Likelihood: Y_i ~ Bernoulli(p_i)
+  # logit(p_i) = α_site[i] + β_0 + β_1*Program_i + β_2*Age_i + 
+  #              β_3*Female_i + β_4*EMS_i + β_5*TPA_i + β_6*Thrombectomy_i
+  
+  for (i in 1:N) {
+    y[i] ~ dbern(p[i])
+    logit(p[i]) <- alpha[site[i]] + beta0 + 
+                   beta_prog * program[i] +
+                   beta_age * age[i] +
+                   beta_female * female[i] +
+                   beta_ems * ems[i] +
+                   beta_tpa * tpa[i] +
+                   beta_thr * thr[i]
+    
+    # Age model with interaction:
+    # Age_i ~ N(mu_age + gamma1*Female_i + gamma2*Program_i, sigma_age^2)
+    age[i] ~ dnorm(mu_age_i[i], tau_age)
+    mu_age_i[i] <- mu_age + gamma1 * female[i] + gamma2 * program[i]
+  }
+
+  # Site random intercepts: α_j ~ Normal(mu_alpha, sigma_alpha^2)
+  for (j in 1:J) {
+    alpha[j] ~ dnorm(mu_alpha, tau_alpha)
+  }
+
+  # Priors for outcome model coefficients: β_k ~ N(0, 10^2)
+  beta0 ~ dnorm(0, 0.01)         # precision = 1/100 = 0.01
+  beta_prog ~ dnorm(0, 0.01)
+  beta_age ~ dnorm(0, 0.01)
+  beta_female ~ dnorm(0, 0.01)
+  beta_ems ~ dnorm(0, 0.01)
+  beta_tpa ~ dnorm(0, 0.01)
+  beta_thr ~ dnorm(0, 0.01)
+
+  # Hyperpriors for random effects:
+  # mu_alpha ~ Normal(0, 10^2)
+  mu_alpha ~ dnorm(0, 0.01)
+  
+  # sigma_alpha ~ Half-Normal(0, 2.5)
+  sigma_alpha ~ dnorm(0, 0.16) T(0,)  # precision = 1/(2.5^2) = 0.16
+  tau_alpha <- pow(sigma_alpha, -2)
+
+  # Priors for Age model:
+  # mu_age ~ N(0, 10^2) - mean age (on standardized scale)
+  mu_age ~ dnorm(0, 0.01)
+  
+  # gamma1 (Female effect on Age) ~ N(0, 10^2)
+  gamma1 ~ dnorm(0, 0.01)
+  
+  # gamma2 (Program effect on Age) ~ N(0, 10^2)
+  gamma2 ~ dnorm(0, 0.01)
+  
+  # sigma_age ~ Half-Normal(0, 5)
+  sigma_age ~ dnorm(0, 0.04) T(0,)  # precision = 1/(5^2) = 0.04
+  tau_age <- pow(sigma_age, -2)
+}

@@ -1,0 +1,78 @@
+
+model {
+  # ============================================
+  # OUTCOME MODEL: Y_i ~ Bernoulli(p_i)
+  # ============================================
+  # logit(p_i) = α_j(i) + β_0 + β_1*Program_i + β_2*A_i + 
+  #              β_3*Female_i + β_4*EMS_i + β_5*TPA_i + β_6*Thrombectomy_i
+  
+  for (i in 1:N) {
+    y[i] ~ dbern(p[i])
+    logit(p[i]) <- alpha[site[i]] + beta0 + 
+                   beta1 * program[i] +
+                   beta2 * age[i] +
+                   beta3 * female[i] +
+                   beta4 * ems[i] +
+                   beta5 * tpa[i] +
+                   beta6 * thr[i]
+    
+    # ============================================
+    # AGE SUB-MODEL: A_i ~ N(μ_A,i, σ_A²)
+    # ============================================
+    # μ_A,i = γ_0 + γ_1*Female_i + γ_2*Program_i + γ_3*EMS_i
+    # For observed Age, this contributes to likelihood
+    # For missing Age, this is the imputation model
+    
+    age[i] ~ dnorm(mu_age[i], tau_age)
+    mu_age[i] <- gamma0 + gamma1 * female[i] + gamma2 * program[i] + gamma3 * ems[i]
+  }
+
+  # ============================================
+  # SITE RANDOM INTERCEPTS
+  # ============================================
+  # α_j ~ N(μ_α, σ_α²) for j = 1,...,J
+  
+  for (j in 1:J) {
+    alpha[j] ~ dnorm(mu_alpha, tau_alpha)
+  }
+
+  # ============================================
+  # PRIORS: Outcome Model Fixed Effects
+  # ============================================
+  # β_k ~ N(0, 10²) for k = 0,...,6
+  
+  beta0 ~ dnorm(0, 0.01)   # precision = 1/100 = 0.01
+  beta1 ~ dnorm(0, 0.01)   # Program effect
+  beta2 ~ dnorm(0, 0.01)   # Age effect
+  beta3 ~ dnorm(0, 0.01)   # Female effect
+  beta4 ~ dnorm(0, 0.01)   # EMS effect
+  beta5 ~ dnorm(0, 0.01)   # TPA effect
+  beta6 ~ dnorm(0, 0.01)   # Thrombectomy effect
+
+  # ============================================
+  # PRIORS: Age Model Fixed Effects
+  # ============================================
+  # γ_ℓ ~ N(0, 10²) for ℓ = 0,...,3
+  
+  gamma0 ~ dnorm(0, 0.01)  # Baseline age (intercept)
+  gamma1 ~ dnorm(0, 0.01)  # Female effect on age
+  gamma2 ~ dnorm(0, 0.01)  # Program effect on age
+  gamma3 ~ dnorm(0, 0.01)  # EMS effect on age
+
+  # ============================================
+  # HYPERPRIORS: Random Effects
+  # ============================================
+  # μ_α ~ N(0, 10²)
+  mu_alpha ~ dnorm(0, 0.01)
+  
+  # σ_α ~ Half-Normal(0, 2.5)
+  sigma_alpha ~ dnorm(0, 0.16) T(0,)  # precision = 1/(2.5²) = 0.16
+  tau_alpha <- pow(sigma_alpha, -2)
+
+  # ============================================
+  # HYPERPRIORS: Age Model Variance
+  # ============================================
+  # σ_A ~ Half-Normal(0, 20)
+  sigma_age ~ dnorm(0, 0.0025) T(0,)  # precision = 1/(20²) = 0.0025
+  tau_age <- pow(sigma_age, -2)
+}
