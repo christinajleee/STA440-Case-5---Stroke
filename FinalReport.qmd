@@ -36,9 +36,27 @@ In order to account for the variables with the most missing data, we started by 
 
 Once the chained imputations were complete, we generated fully imputed datasets and used these to compute correlations between each predictor and the outcome variable. Continuous variables were evaluated with Pearson correlations, and the ordinal predictors were evaluated using Spearman correlations. By combining the imputed datasets and using the correlations to create the full model, we made sure that our analysis accounted for the uncertainty introduced by the missing data.
 
-\[INSERT EQUATION HERE\]
+$$
+\begin{aligned}
+\operatorname{logit}\!\big(\Pr(\text{Home/Rehab})\big)
+&= \beta_0 
+  + \beta_1(\text{Age})
+  + \beta_2(\text{Pre-hospital notification}) \\
+&\quad + \beta_3(\text{EMS transport})
+  + \beta_4(\text{Program phase}) \\
+&\quad + \text{Gender effects}
+  + \text{Race effects}
+  + \text{Hospital site effects}
+  + \text{Time-period effects} \\
+&\quad + \beta_5(\text{Thrombectomy})
+  + \beta_6(\text{tPA})
+  + \beta_7(\text{tPA complication})
+  + \beta_8(\text{Thrombectomy complication})
+\end{aligned}
+$$
 
-Based on our ROC curve, the AUC was 0.85 \[FIGURE HERE\], which indicates that the model can well distinguish between patients who were discharged home and those who were sent to rehabilitation services. The residuals show several signs of model misfit including there being a curvature pattern being represented across the fitted probabilities and Age \[FIGURE HERE\] and the QQ-plot showing deviations from the reference line in the tails \[FIGURE HERE\]. These patterns suggest that the logistic model is not capturing all of the underlying structure in the data. Additionally, using MICE for the frequentist model also relies on the assumption that the missing data are missing at random. We cannot confirm that this assumption is true, and this could affect both the imputations and the model estimates. Because of this, we believe that a Bayesian approach which can incorporate uncertainty directly and allow more flexible modeling, may be a better fit for our data and research goals.
+
+Based on our ROC curve, the AUC was 0.85 (Figure 1), which indicates that the model can well distinguish between patients who were discharged home and those who were sent to rehabilitation services. The residuals show several signs of model misfit including there being a curvature pattern being represented across the fitted probabilities and Age (Figure 2) and the QQ-plot showing deviations from the reference line in the tails (Figure 3). These patterns suggest that the logistic model is not capturing all of the underlying structure in the data. Additionally, using MICE for the frequentist model also relies on the assumption that the missing data are missing at random. We cannot confirm that this assumption is true, and this could affect both the imputations and the model estimates. Because of this, we believe that a Bayesian approach which can incorporate uncertainty directly and allow more flexible modeling, may be a better fit for our data and research goals.
 
 # Bayesian Model:
 
@@ -71,3 +89,509 @@ Our model itself showed curvature in residual plots with respect to age and fitt
 # Conclusion:
 
 Overall, the hierarchical Bayesian model suggests that patient outcomes improved slightly over the study period, but the estimated program effect is small relative to variation explained by patient characteristics and hospital site. Age and treatment modality (particularly thrombolytic therapy) are strong predictors of favorable discharge, whereas thrombectomy and EMS arrival show weaker or more context-dependent associations. The large magnitude of site-level variation indicates that institutional differences such as workflow efficiency, staffing, diagnostic capabilities, or local protocols, likely play a larger role in shaping patient outcomes than the system-wide educational and training intervention alone.
+
+# Appendix
+
+```{r echo=FALSE, include=FALSE}
+# --- Combined EDA + Frequentist model + diagnostics chunk (code hidden on render) ---
+
+library(tidyverse)
+library(ggplot2)
+library(naniar)
+library(corrplot)
+library(gridExtra)
+library(broom)
+library(car)
+library(pROC)
+library(patchwork)
+library(scales)
+
+# Load dataset (adjust path if needed)
+
+# If your dataset is already in the environment as `x`, you can comment out the load line.
+
+if (file.exists("strokeStudy.RData")) {
+load("strokeStudy.RData")  # loads object 'x' (expected)
+}
+
+# Basic dataset checks
+
+cat("DATASET OVERVIEW\n")
+cat("Dataset name: x\n")
+if (exists("x")) {
+cat("Dimensions:", dim(x), "\n")
+cat("Variables:", paste(names(x), collapse = ", "), "\n\n")
+} else {
+stop("Data frame 'x' not found in the environment.")
+}
+
+cat("BASIC DATA OVERVIEW\n")
+str(x)
+summary(x)
+
+# MISSING DATA ANALYSIS
+
+cat("\nMISSING DATA ANALYSIS\n")
+miss_summary <- miss_var_summary(x)
+print(miss_summary)
+
+p1 <- gg_miss_var(x) +
+labs(title = "Missing Data by Variable")
+
+missing_by_time <- x %>%
+group_by(Time2) %>%
+summarise(across(everything(), ~sum(is.na(.))/n() * 100)) %>%
+pivot_longer(cols = -Time2, names_to = "variable", values_to = "missing_pct")
+
+p2 <- ggplot(missing_by_time, aes(x = Time2, y = missing_pct, color = variable)) +
+geom_line(aes(group = variable)) +
+geom_point() +
+labs(title = "Missing Data Patterns Over Time", y = "Missing (%)", x = "Study Quarter") +
+theme(legend.position = "none")
+
+# Outcome overview
+
+cat("\nOUTCOME VARIABLE: homeOrRehab\n")
+outcome_table <- table(x$homeOrRehab, useNA = "always")
+outcome_prop <- prop.table(table(x$homeOrRehab))
+print(outcome_table)
+print(outcome_prop)
+
+p3 <- ggplot(x, aes(x = homeOrRehab)) +
+geom_bar(fill = "steelblue", alpha = 0.7) +
+labs(title = "Distribution of Discharge Disposition", x = "Home or Rehabilitation", y = "Count") +
+geom_text(stat = 'count', aes(label = ..count..), vjust = -0.5)
+
+outcome_time <- x %>%
+group_by(Time2, homeOrRehab) %>%
+summarise(count = n(), .groups = "drop") %>%
+group_by(Time2) %>%
+mutate(prop = count/sum(count)) %>%
+filter(homeOrRehab == TRUE)
+
+p4 <- ggplot(outcome_time, aes(x = Time2, y = prop)) +
+geom_col(fill = "darkgreen", alpha = 0.7) +
+geom_text(aes(label = paste0(round(prop*100, 1), "%")), vjust = -0.5) +
+labs(title = "Proportion of Good Outcomes by Study Quarter", y = "Proportion with Good Outcome", x = "Study Quarter") +
+ylim(0, 1)
+
+# Demographics
+
+p5 <- ggplot(x, aes(x = homeOrRehab, y = Age, fill = homeOrRehab)) +
+geom_boxplot(alpha = 0.7) +
+labs(title = "Age Distribution by Outcome", x = "Home or Rehabilitation", y = "Age") +
+theme(legend.position = "none")
+
+gender_outcome <- x %>%
+count(Gender, homeOrRehab) %>%
+group_by(Gender) %>%
+mutate(prop = n/sum(n))
+
+p6 <- ggplot(gender_outcome, aes(x = Gender, y = prop, fill = homeOrRehab)) +
+geom_bar(stat = "identity", position = "fill") +
+labs(title = "Outcome Distribution by Gender", y = "Proportion") +
+scale_y_continuous(labels = scales::percent)
+
+race_outcome <- x %>%
+count(Race2, homeOrRehab) %>%
+group_by(Race2) %>%
+mutate(prop = n/sum(n))
+
+p7 <- ggplot(race_outcome, aes(x = Race2, y = prop, fill = homeOrRehab)) +
+geom_bar(stat = "identity", position = "fill") +
+labs(title = "Outcome Distribution by Race", y = "Proportion") +
+scale_y_continuous(labels = scales::percent) +
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Clinical/process variables
+
+ems_outcome <- x %>%
+count(EMSvsCar, homeOrRehab) %>%
+group_by(EMSvsCar) %>%
+mutate(prop = n/sum(n))
+
+p8 <- ggplot(ems_outcome, aes(x = factor(EMSvsCar), y = prop, fill = homeOrRehab)) +
+geom_bar(stat = "identity", position = "fill") +
+labs(title = "Outcome by Arrival Mode", x = "Arrival by EMS (1=Yes, 0=No)", y = "Proportion") +
+scale_y_continuous(labels = scales::percent)
+
+treatment_plots <- list()
+treatment_vars <- c("hadThrombectomy", "hadTPA", "PreHospNotify")
+
+for(i in seq_along(treatment_vars)) {
+var <- treatment_vars[i]
+if (! (var %in% names(x))) next
+treatment_data <- x %>%
+count(!!sym(var), homeOrRehab) %>%
+group_by(!!sym(var)) %>%
+mutate(prop = n/sum(n))
+
+treatment_plots[[i]] <- ggplot(treatment_data,
+aes(x = factor(!!sym(var)), y = prop, fill = homeOrRehab)) +
+geom_bar(stat = "identity", position = "fill") +
+labs(title = paste("Outcome by", var), x = var, y = "Proportion") +
+scale_y_continuous(labels = scales::percent)
+}
+
+# Complications
+
+cat("\nCOMPLICATION ANALYSIS\n")
+if("tpaComplic" %in% names(x)) {
+print(table(x$tpaComplic, useNA = "always"))
+}
+if("thrComplic" %in% names(x)) {
+print(table(x$thrComplic, useNA = "always"))
+}
+
+# Site-specific analysis
+
+site_outcome <- x %>%
+group_by(siteID, homeOrRehab) %>%
+summarise(count = n(), .groups = "drop") %>%
+group_by(siteID) %>%
+mutate(prop_good = count/sum(count)) %>%
+filter(homeOrRehab == TRUE)
+
+p9 <- ggplot(site_outcome, aes(x = factor(siteID), y = prop_good)) +
+geom_col(fill = "purple", alpha = 0.7) +
+geom_text(aes(label = paste0(round(prop_good*100, 1), "%")), vjust = -0.5) +
+labs(title = "Proportion of Good Outcomes by Site", y = "Proportion with Good Outcome", x = "Site ID") +
+ylim(0, 1)
+
+# Arrange and print summary plots
+
+grid.arrange(p3, p4, p5, p6, ncol = 2)
+grid.arrange(p7, p8, p9, ncol = 2)
+for(plot in treatment_plots) {
+if(!is.null(plot)) print(plot)
+}
+
+# Demographic summary table
+
+cat("\nSUMMARY STATISTICS TABLE\n")
+demographic_summary <- x %>%
+group_by(homeOrRehab) %>%
+summarise(
+n = n(),
+mean_age = mean(Age, na.rm = TRUE),
+sd_age = sd(Age, na.rm = TRUE),
+.groups = 'drop'
+)
+print(demographic_summary)
+
+# Time trend analysis
+
+cat("\nTIME TREND ANALYSIS FOR PROGRAM EFFECTIVENESS\n")
+x <- x %>%
+mutate(period = case_when(
+Time2 %in% 1:2 ~ "Baseline",
+Time2 %in% 3:6 ~ "Implementation",
+Time2 %in% 7:8 ~ "End-of-Study",
+TRUE ~ "Other"
+))
+
+period_outcome <- x %>%
+group_by(period, homeOrRehab) %>%
+summarise(count = n(), .groups = "drop") %>%
+group_by(period) %>%
+mutate(prop = count/sum(count), total = sum(count)) %>%
+filter(homeOrRehab == TRUE)
+
+print(period_outcome)
+
+p10 <- ggplot(period_outcome, aes(x = period, y = prop)) +
+geom_col(fill = "orange", alpha = 0.7) +
+geom_text(aes(label = paste0(round(prop*100, 1), "%\n(n=", total, ")")), vjust = -0.5) +
+labs(title = "Good Outcomes by Study Period", y = "Proportion with Good Outcome", x = "Study Period") +
+ylim(0, 1)
+
+print(p10)
+
+# Correlation analysis (numeric)
+
+cat("\nCORRELATION ANALYSIS\n")
+numeric_data <- x %>%
+select(where(is.numeric)) %>%
+select(-any_of(c("siteID")))
+
+if (ncol(numeric_data) > 1) {
+cor_matrix <- cor(numeric_data, use = "pairwise.complete.obs")
+corrplot(cor_matrix, method = "circle", type = "upper")
+}
+
+# -----------------------------
+
+# Frequentist modeling pipeline
+
+# -----------------------------
+
+# Make working copy and create numeric outcome
+
+df <- x
+df <- df %>%
+mutate(
+homeOrRehab_num = case_when(
+is.numeric(homeOrRehab) ~ as.integer(homeOrRehab),
+is.logical(homeOrRehab) ~ as.integer(homeOrRehab),
+toupper(as.character(homeOrRehab)) %in% c("YES","1","TRUE") ~ 1L,
+toupper(as.character(homeOrRehab)) %in% c("NO","0","FALSE") ~ 0L,
+TRUE ~ NA_integer_
+)
+)
+
+# Impute Age (simple deterministic imputation)
+
+lm_age <- lm(Age ~ Gender + Race2 + Time2 + hadThrombectomy + hadTPA + tpaComplic + thrComplic + homeOrRehab_num,
+data = df, na.action = na.exclude)
+age_na_idx <- which(is.na(df$Age))
+if (length(age_na_idx) > 0) {
+pred_age <- predict(lm_age, newdata = df[age_na_idx, ], se.fit = FALSE)
+df$Age[age_na_idx] <- pred_age
+}
+
+# Impute PreHospNotify (logistic, stochastic)
+
+df <- df %>%
+mutate(
+PreHospNotify_bin = case_when(
+is.numeric(PreHospNotify) ~ as.integer(PreHospNotify),
+is.logical(PreHospNotify) ~ as.integer(PreHospNotify),
+toupper(as.character(PreHospNotify)) %in% c("YES","1","TRUE") ~ 1L,
+toupper(as.character(PreHospNotify)) %in% c("NO","0","FALSE") ~ 0L,
+TRUE ~ NA_integer_
+)
+)
+
+glm_pre <- glm(PreHospNotify_bin ~ Age + Gender + Race2 + siteID + Time2 + hadThrombectomy + hadTPA + tpaComplic + thrComplic + homeOrRehab_num,
+data = df, family = binomial(), na.action = na.exclude)
+pre_na_idx <- which(is.na(df$PreHospNotify_bin))
+if (length(pre_na_idx) > 0) {
+p_hat <- predict(glm_pre, newdata = df[pre_na_idx, ], type = "response")
+set.seed(123)
+df$PreHospNotify_bin[pre_na_idx] <- rbinom(length(p_hat), size = 1, prob = p_hat)
+}
+df <- df %>% mutate(PreHospNotify_imp = if_else(is.na(PreHospNotify), as.character(PreHospNotify_bin), as.character(PreHospNotify)))
+
+# Impute EMSvsCar (logistic, stochastic)
+
+df <- df %>%
+mutate(
+EMSvsCar_bin = case_when(
+is.numeric(EMSvsCar) ~ as.integer(EMSvsCar),
+is.logical(EMSvsCar) ~ as.integer(EMSvsCar),
+toupper(as.character(EMSvsCar)) %in% c("YES","1","TRUE") ~ 1L,
+toupper(as.character(EMSvsCar)) %in% c("NO","0","FALSE") ~ 0L,
+TRUE ~ NA_integer_
+)
+)
+
+glm_ems <- glm(EMSvsCar_bin ~ Age + PreHospNotify_bin + Gender + Race2 + siteID + Time2 + hadThrombectomy + hadTPA + tpaComplic + thrComplic + homeOrRehab_num,
+data = df, family = binomial(), na.action = na.exclude)
+ems_na_idx <- which(is.na(df$EMSvsCar_bin))
+if (length(ems_na_idx) > 0) {
+p_hat_ems <- predict(glm_ems, newdata = df[ems_na_idx, ], type = "response")
+set.seed(456)
+df$EMSvsCar_bin[ems_na_idx] <- rbinom(length(p_hat_ems), size = 1, prob = p_hat_ems)
+}
+df <- df %>% mutate(EMSvsCar_imp = if_else(is.na(EMSvsCar), as.character(EMSvsCar_bin), as.character(EMSvsCar)))
+
+# Create df_imputed for modeling
+
+df_imputed <- df %>%
+mutate(Age_imp = Age,
+PreHospNotify_imp_num = as.integer(as.character(PreHospNotify_bin)),
+EMSvsCar_imp_num = as.integer(as.character(EMSvsCar_bin))
+)
+
+# Fit final GLM (without phase_group here; later phase mapping code can add it)
+
+df_imputed <- df_imputed %>%
+mutate(
+homeOrRehab_num = as.integer(homeOrRehab_num),
+Age_imp = as.numeric(Age_imp),
+PreHospNotify_imp_num = as.integer(PreHospNotify_imp_num),
+EMSvsCar_imp_num = as.integer(EMSvsCar_imp_num),
+Gender = as.factor(Gender),
+Race2 = as.factor(Race2),
+siteID = as.factor(siteID),
+Time2 = as.factor(Time2),
+hadThrombectomy = as.factor(hadThrombectomy),
+hadTPA = as.factor(hadTPA),
+tpaComplic = as.factor(tpaComplic),
+thrComplic = as.factor(thrComplic)
+)
+
+predictors <- c("Age_imp","PreHospNotify_imp_num","EMSvsCar_imp_num","Gender","Race2","siteID","Time2","hadThrombectomy","hadTPA","tpaComplic","thrComplic")
+predictors <- predictors[predictors %in% names(df_imputed)]
+fmla <- as.formula(paste("homeOrRehab_num ~", paste(predictors, collapse = " + ")))
+final_glm <- glm(fmla, data = df_imputed, family = binomial(), na.action = na.exclude)
+
+# Model summary and ORs
+
+summary(final_glm)
+or_table <- broom::tidy(final_glm, conf.int = TRUE) %>%
+mutate(OR = exp(estimate), OR_low = exp(conf.low), OR_high = exp(conf.high)) %>%
+select(term, estimate, OR, OR_low, OR_high, p.value)
+print(or_table)
+
+# VIF
+
+vif_vals <- tryCatch(car::vif(final_glm), error = function(e) { message("VIF computation failed: ", e$message); NULL })
+print(vif_vals)
+
+# ROC/AUC for the fitted model
+
+df_imputed <- df_imputed %>% mutate(pred_prob = predict(final_glm, type = "response"))
+roc_obj <- pROC::roc(df_imputed$homeOrRehab_num, df_imputed$pred_prob, quiet = TRUE)
+auc_val <- pROC::auc(roc_obj)
+cat("AUC =", round(as.numeric(auc_val), 3), "\n")
+plot(roc_obj, main = paste0("ROC (AUC = ", round(as.numeric(auc_val),3), ")"))
+
+# Confusion table
+
+threshold <- 0.5
+df_imputed <- df_imputed %>% mutate(pred_class = if_else(pred_prob >= threshold, 1L, 0L))
+table_truth_pred <- table(Observed = df_imputed$homeOrRehab_num, Predicted = df_imputed$pred_class)
+print(table_truth_pred)
+
+# Phase mapping and final model with phase_group (if desired)
+
+control_qtrs <- c("Y1Q1", "Y1Q2")
+impl_qtrs    <- c("Y1Q3", "Y1Q4", "Y2Q1", "Y2Q2")
+treat_qtrs   <- c("Y2Q3", "Y2Q4")
+assign_phase <- function(time2) {
+if (is.na(time2)) return(NA_character_)
+t <- as.character(time2)
+if (t %in% treat_qtrs) return("treatment")
+if (t %in% impl_qtrs)  return("implementation")
+if (t %in% control_qtrs) return("control")
+return(NA_character_)
+}
+if("Time2" %in% names(df_imputed)) {
+df_imputed <- df_imputed %>%
+mutate(Time2 = as.character(Time2),
+phase_group = vapply(Time2, assign_phase, FUN.VALUE = character(1)),
+phase_group = factor(phase_group, levels = c("control", "implementation", "treatment"))
+)
+
+# if you want to include phase_group in a model:
+
+if ("phase_group" %in% names(df_imputed)) {
+predictors2 <- c(predictors, "phase_group")
+predictors2 <- predictors2[predictors2 %in% names(df_imputed)]
+fmla2 <- as.formula(paste("homeOrRehab_num ~", paste(predictors2, collapse = " + ")))
+final_glm_phase <- glm(fmla2, data = df_imputed, family = binomial(), na.action = na.exclude)
+df_imputed <- df_imputed %>% mutate(pred_prob_phase = predict(final_glm_phase, type = "response"))
+roc_obj_phase <- pROC::roc(df_imputed$homeOrRehab_num, df_imputed$pred_prob_phase, quiet = TRUE)
+cat("AUC (phase model) =", round(as.numeric(pROC::auc(roc_obj_phase)), 3), "\n")
+plot(roc_obj_phase, main = paste0("ROC (AUC = ", round(as.numeric(pROC::auc(roc_obj_phase)),3), ")"))
+}
+}
+
+# Diagnostics: compute residuals and diagnostic plots
+
+diag_df <- df_imputed %>%
+mutate(
+fitted = predict(final_glm, type = "response"),
+dev_resid = residuals(final_glm, type = "deviance"),
+pear_resid = residuals(final_glm, type = "pearson"),
+raw_resid = residuals(final_glm, type = "response"),
+leverage = hatvalues(final_glm),
+cooks = cooks.distance(final_glm),
+obs_id = row_number()
+)
+
+n <- nrow(diag_df)
+cooks_thresh <- 4 / n
+
+p1 <- ggplot(diag_df, aes(x = fitted, y = dev_resid)) +
+geom_hline(yintercept = 0, color = "grey40") +
+geom_point(alpha = 0.6) +
+geom_smooth(method = "loess", se = FALSE, color = "darkred") +
+labs(x = "Fitted probability", y = "Deviance residuals", title = "Deviance residuals vs Fitted") +
+theme_minimal()
+
+p2 <- ggplot(diag_df, aes(sample = dev_resid)) +
+stat_qq(alpha = 0.6) +
+stat_qq_line(color = "darkblue") +
+labs(title = "QQ-plot of deviance residuals") +
+theme_minimal()
+
+p3 <- ggplot(diag_df, aes(x = pear_resid)) +
+geom_histogram(aes(y = ..density..), bins = 30, fill = "steelblue", alpha = 0.6) +
+geom_density(color = "darkred") +
+labs(x = "Pearson residuals", title = "Distribution of Pearson residuals") +
+theme_minimal()
+
+p4 <- ggplot(diag_df, aes(x = leverage, y = dev_resid)) +
+geom_point(aes(size = cooks), alpha = 0.6) +
+scale_size_continuous(range = c(1, 6), name = "Cook's D") +
+geom_text(data = subset(diag_df, cooks > cooks_thresh), aes(label = obs_id), vjust = -1.1, size = 3, color = "darkred") +
+geom_hline(yintercept = 0, color = "grey40") +
+labs(x = "Leverage (hat values)", y = "Deviance residuals", title = "Residuals vs Leverage (Cook's D sized)") +
+theme_minimal()
+
+p5 <- ggplot(diag_df, aes(x = reorder(obs_id, -cooks), y = cooks)) +
+geom_col(fill = "lightblue") +
+geom_hline(yintercept = cooks_thresh, color = "red", linetype = "dashed") +
+labs(x = "Observation (ordered by Cook's D)", y = "Cook's distance", title = paste0("Cook's distance (threshold = ", round(cooks_thresh, 4), ")")) +
+theme_minimal() + theme(axis.text.x = element_blank())
+
+# Display diagnostic grid
+
+(p1 | p2) / (p3 | p4) / p5 + plot_layout(heights = c(1,1,0.7))
+
+# Plot residuals vs Age only
+
+ggplot(diag_df, aes(x = Age_imp, y = dev_resid)) +
+geom_hline(yintercept = 0, color = "gray50") +
+geom_point(alpha = 0.4, size = 1.3) +
+geom_smooth(method = "loess", se = FALSE, color = "red") +
+labs(title = "Residuals vs Age", x = "Age", y = "Deviance residual") +
+theme_minimal()
+
+# End of combined chunk
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figure 1. ROC curve for the model."}
+# ROC / AUC
+df_imputed <- df_imputed %>% mutate(pred_prob_phase = predict(final_glm_phase, type = "response"))
+roc_obj <- pROC::roc(df_imputed$homeOrRehab_num, df_imputed$pred_prob_phase, quiet = TRUE)
+plot(roc_obj, main = paste0("ROC (AUC = ", round(as.numeric(pROC::auc(roc_obj)),3), ")"))
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figure 2. Residuals of Age."}
+library(tidyverse)
+
+# Compute residuals and fitted values
+
+diag_df <- df_imputed %>%
+mutate(
+fitted = predict(final_glm_phase, type = "response"),
+dev_resid = residuals(final_glm_phase, type = "deviance")
+)
+
+# Plot residuals vs Age
+
+ggplot(diag_df, aes(x = Age_imp, y = dev_resid)) +
+geom_hline(yintercept = 0, color = "gray50") +
+geom_point(alpha = 0.4, size = 1.3) +
+geom_smooth(method = "loess", se = FALSE, color = "red") +
+labs(
+title = "Residuals vs Age",
+x = "Age",
+y = "Deviance residual"
+) +
+theme_minimal()
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figure 3. QQ-plot of deviance residuals (look for departures from Normal."}
+# 2) QQ-plot of deviance residuals (look for departures from Normal)
+p2 <- ggplot(diag_df, aes(sample = dev_resid)) +
+  stat_qq(alpha = 0.6) +
+  stat_qq_line(color = "darkblue") +
+  labs(title = "QQ-plot of deviance residuals") +
+  theme_minimal()
+
+p2
+```
