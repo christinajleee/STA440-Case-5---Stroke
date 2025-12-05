@@ -26,7 +26,7 @@ Our EDA focused on understanding how treatment type, complications, and demograp
 
 After full implementation of the intervention program, outcomes improved for all groups, but the relative ordering persisted. TPA-only patients continued to have the best outcomes, while thrombectomy-only patients still had the poorest outcomes, though their performance improved compared to baseline. Interestingly, patients who received both procedures performed moderately well but not as well as patients receiving TPA alone, and slightly worse than the same group earlier in the study.
 
-Across all operation types, absence of complications was strongly associated with better outcomes. In contrast, any complication—TPA-related, thrombectomy-related, or both—substantially reduced the likelihood of discharge to home or rehab. Finally, one patient was observed to have received both procedures, and complications occurred for both. This individual was not discharged to home or rehab.
+Across all operation types, absence of complications was strongly associated with better outcomes. In contrast, any complication TPA-related, thrombectomy-related, or both, substantially reduced the likelihood of discharge to home or rehab. Finally, one patient was observed to have received both procedures, and complications occurred for both. This individual was not discharged to home or rehab.
 
 # Frequentist Model:
 
@@ -46,7 +46,9 @@ Rationale The goal of this case study was to evaluate how patient characteristic
 
 We chose to include a program indicator to capture the change between pre- and post-implementation periods while controlling for other variables, in order to test if outcomes improved after implementation of the program. Additional covariates such as age, gender, EMS arrival, tPA administration, and thrombectomy were included, as our EDA suggested their association with discharge outcomes. To fit this hierarchical model, we decided to implement a Bayesian model with weakly informative priors to later obtain full posterior uncertainty for all effects, including the program indicator.
 
-Implementation We fit a Bayesian hierarchical logistic regression model in JAGS as the following: \[EQUATION\]
+Implementation We fit a Bayesian hierarchical logistic regression model in JAGS as the following:
+
+\[EQUATION\]
 
 Age was centered and scaled to improve mixing, and a random intercept was assigned to each site to allow different baseline outcomes across centers. We incorporated normally distributed priors to all coefficients, as well as site-level intercepts governed by hyperparameters. This model was fit with 4 MCMC chains with 5000 iterations each, setting a burn-in period of 2000, for a final set of posterior samples for estimation.
 
@@ -54,11 +56,11 @@ Age was centered and scaled to improve mixing, and a random intercept was assign
 
 ## Results:
 
-The posterior distribution for the program indicator had a mean of approximately 0.16, with a 95% credible interval that included 0. As such, this estimate suggests a modest positive association between program implementation and improved discharge outcomes, though the uncertainty interval indicates that the magnitude of this improvement is small and not strongly distinguishable from no effect. In other words, while outcomes trend upward over time, the statistical evidence for a meaningful effect attributable solely to the program is weak.
+The posterior distribution for the program indicator had a mean of approximately 0.16, with a 95% credible interval that included 0 \[FIGURE HERE\]. As such, this estimate suggests a modest positive association between program implementation and improved discharge outcomes, though the uncertainty interval indicates that the magnitude of this improvement is small and not strongly distinguishable from no effect. In other words, while outcomes trend upward over time, the statistical evidence for a meaningful effect attributable solely to the program is weak.
 
-Several other covariates show consistent relationships with the outcome. Age exhibits a negative association with the probability of home/rehab discharge, indicating older patients have lower odds of receiving a favorable outcome, consistent with both our EDA and clinical expectations. EMS arrivals were associated with worse outcomes, which likely reflects underlying case severity, as patients arriving by EM tend to be more severely impaired.
+Several other covariates show consistent relationships with the outcome. Age exhibits a negative association with the probability of home/rehab discharge \[FIGURE HERE\], indicating older patients have lower odds of receiving a favorable outcome, consistent with both our EDA and clinical expectations. EMS arrivals were associated with worse outcomes \[FIGURE HERE\], which likely reflects underlying case severity, as patients arriving by EM tend to be more severely impaired.
 
-Finally, we found a substantial site-level heterogeneity - the variance in random intercepts is larger than the magnitude of the program effect, implying that the hospital itself plays a more influential role in discharge outcomes than the intervention program.
+Finally, we found a substantial site-level heterogeneity. We discovered that the variance in random intercepts is larger than the magnitude of the program effect \[FIGURE HERE\], implying that the hospital itself plays a more influential role in discharge outcomes than the intervention program.
 
 # Shortcomings/Assumptions:
 
