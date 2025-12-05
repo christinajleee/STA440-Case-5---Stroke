@@ -4,12 +4,7 @@ author:
   - name: "Eunice Lee"
   - name: "Diane Lin"
   - name: "Christina Lee"
-format: 
-  pdf:
-    documentclass: article
-    toc: true
-    number-sections: true
-    keep-tex: false
+format: pdf
 ---
 
 # Background:
@@ -132,11 +127,11 @@ To assess how well our hierarchical logistic regression model captured the obser
 
 ## Results:
 
-The posterior distribution for the program indicator had a mean of approximately 0.16, with a 95% credible interval that included 0 (Figure 4). As such, this estimate suggests a modest positive association between program implementation and improved discharge outcomes, though the uncertainty interval indicates that the magnitude of this improvement is small and not strongly distinguishable from no effect. In other words, while outcomes trend upward over time, the statistical evidence for a meaningful effect attributable solely to the program is weak.
+The posterior distribution for the program indicator had a mean of approximately 0.16, with a 95% credible interval that included 0 (Table 1). As such, this estimate suggests a modest positive association between program implementation and improved discharge outcomes, though the uncertainty interval indicates that the magnitude of this improvement is small and not strongly distinguishable from no effect. In other words, while outcomes trend upward over time, the statistical evidence for a meaningful effect attributable solely to the program is weak.
 
-Several other covariates show consistent relationships with the outcome. Age exhibits a negative association with the probability of home/rehab discharge (Figure 4), indicating older patients have lower odds of receiving a favorable outcome, consistent with both our EDA and clinical expectations. EMS arrivals were associated with worse outcomes (Figure 4), which likely reflects underlying case severity, as patients arriving by EM tend to be more severely impaired.
+Several other covariates show consistent relationships with the outcome. Age exhibits a negative association with the probability of home/rehab discharge (Table 1), indicating older patients have lower odds of receiving a favorable outcome, consistent with both our EDA and clinical expectations. EMS arrivals were associated with worse outcomes (Table 1), which likely reflects underlying case severity, as patients arriving by EM tend to be more severely impaired.
 
-Finally, we found a substantial site-level heterogeneity. We discovered that the variance in random intercepts is larger than the magnitude of the program effect (Figure 4), implying that the hospital itself plays a more influential role in discharge outcomes than the intervention program.
+Finally, we found a substantial site-level heterogeneity. We discovered that the variance in random intercepts is larger than the magnitude of the program effect (Table 1), implying that the hospital itself plays a more influential role in discharge outcomes than the intervention program.
 
 # Shortcomings/Assumptions:
 
@@ -1407,7 +1402,12 @@ p2 <- ggplot(diag_df, aes(sample = dev_resid)) +
 p2
 ```
 
-```{r, echo=FALSE, warning=FALSE, message=FALSE, tbl-cap="Table 1. 95% Credible Intervals."}
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| tbl-cap: "Table 1. 95% Credible Intervals."
+#| label: tbl-credible-intervals
 
 cat("\n=== 95% CREDIBLE INTERVALS ===\n")
 cat("\n--- Outcome Model ---\n")
