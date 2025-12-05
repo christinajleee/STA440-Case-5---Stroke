@@ -142,7 +142,7 @@ Finally, we found a substantial site-level heterogeneity. We discovered that the
 
 Several limitations affect the strength and interpretability of our findings. First, the high missingness of age, our most predictive covariate, as well as the fact that it was completely missing for several sites, reduces confidence in age-related estimates, even with the imputation of our Bayesian model. Our models both also assume Missing at Random. This assumption, if inaccurate, may bias parameter estimates.
 
-Our model itself showed curvature in residual plots with respect to age and fitted values, heavy tails and site-level structure, indicating that the logistic model may have been too restrictive. Furthermore, MCMC diagnostics revealed that mu_alpha mixed poorly and showed high autocorrelation with low ESS.
+Our model itself showed curvature in residual plots with respect to age and fitted values, heavy tails and site-level structure, indicating that the logistic model may have been too restrictive. For future steps, looking into nonlinear effects, interactions, or semiparametric components may be informative. Furthermore, MCMC diagnostics revealed that mu_alpha mixed poorly and showed high autocorrelation with low ESS. As such, the hierarchical component may need reparameterization or more informative priors to stabilize sampling
 
 # Conclusion:
 
