@@ -1,7 +1,15 @@
 ---
 title: "Factors that Influence Clinical Outcomes After Ischemic Stroke"
-Authors: Eunice Lee, Diane Lin, Christina Lee
-format: html
+author:
+  - name: "Eunice Lee"
+  - name: "Diane Lin"
+  - name: "Christina Lee"
+format: 
+  pdf:
+    documentclass: article
+    toc: true
+    number-sections: true
+    keep-tex: false
 ---
 
 # Background:
@@ -55,7 +63,6 @@ $$
 \end{aligned}
 $$
 
-
 Based on our ROC curve, the AUC was 0.85 (Figure 1), which indicates that the model can well distinguish between patients who were discharged home and those who were sent to rehabilitation services. The residuals show several signs of model misfit including there being a curvature pattern being represented across the fitted probabilities and Age (Figure 2) and the QQ-plot showing deviations from the reference line in the tails (Figure 3). These patterns suggest that the logistic model is not capturing all of the underlying structure in the data. Additionally, using MICE for the frequentist model also relies on the assumption that the missing data are missing at random. We cannot confirm that this assumption is true, and this could affect both the imputations and the model estimates. Because of this, we believe that a Bayesian approach which can incorporate uncertainty directly and allow more flexible modeling, may be a better fit for our data and research goals.
 
 # Bayesian Model:
@@ -66,19 +73,70 @@ We chose to include a program indicator to capture the change between pre- and p
 
 Implementation We fit a Bayesian hierarchical logistic regression model in JAGS as the following:
 
-\[EQUATION\]
+## Outcome Model
+
+$$
+\begin{aligned}
+Y_i &\sim \text{Bernoulli}(p_i) \\[6pt]
+\text{logit}(p_i)
+&= \alpha_{\text{site}[i]} + \beta_0 \\[6pt]
+&\quad + \beta_1\,\text{Program}_i
+       + \beta_2\,A_i^\ast
+       + \beta_3\,\text{Female}_i \\[4pt]
+&\quad + \beta_4\,\text{EMS}_i
+       + \beta_5\,\text{TPA}_i
+       + \beta_6\,\text{Thrombectomy}_i
+\end{aligned}
+$$
+
+## Imputation Model (Age)
+
+$$
+\begin{aligned}
+A_i^\ast &\sim \mathcal{N}(\mu_{A,i}, \sigma_A^2) \\[6pt]
+\mu_{A,i}
+&= \gamma_0
+ + \gamma_1\,\text{Female}_i
+ + \gamma_2\,\text{Program}_i
+ + \gamma_3\,\text{EMS}_i
+\end{aligned}
+$$
+
+## Priors
+
+$$
+\begin{aligned}
+\beta_k &\sim \mathcal{N}(0, 10^2), 
+&\qquad k &= 0,\dots,6 \\[6pt]
+\gamma_\ell &\sim \mathcal{N}(0, 10^2),
+&\qquad \ell &= 0,\dots,3 \\[6pt]
+\alpha_j &\sim \mathcal{N}(\mu_\alpha, \sigma_\alpha^2),
+&\qquad j &= 1,\dots,J \\[6pt]
+\mu_\alpha &\sim \mathcal{N}(0, 10^2) \\[6pt]
+\sigma_\alpha &\sim \text{Half-N}(0, 2.5), \\[2pt]
+\sigma_A &\sim \text{Half-N}(0, 20)
+\end{aligned}
+$$
 
 Age was centered and scaled to improve mixing, and a random intercept was assigned to each site to allow different baseline outcomes across centers. We incorporated normally distributed priors to all coefficients, as well as site-level intercepts governed by hyperparameters. This model was fit with 4 MCMC chains with 5000 iterations each, setting a burn-in period of 2000, for a final set of posterior samples for estimation.
 
 # Evaluation:
 
+## MCMC Diagnostics:
+
+To evaluate convergence and sampling efficiency of our Bayesian hierarchical model, we examined trace plots, ACF plots, and effective sample sizes for all model parameters. The fixed-effect regression coefficients displayed strong convergence with overlapping chains (Figure 10), and the autocorrelation functions rapidly fell to zero within less than 5 lags (Figure 13). Also, most β and γ parameters achieved effective sample sizes between approximately 5,400 and 8,200, indicating efficient mixing and minimal dependence between successive samples (Figure 9). However, the random-effects hyper parameters showed slower mixing and some autocorrelation (Figure 12), as μ_alpha showed more stickiness and poor movement across the window in the trace plot. This resulted in an ESS of approximately 22 (Figure 9), suggesting that posterior inference for μ_alpha carries higher Monte Carlo uncertainty. Such limitations in convergence likely reflect the large heterogeneity across hospital sites, indicating that the challenge of estimating random intercepts with limited sample size and missing data from some centers. Overall, our posterior summaries for the fixed effects parameters showed as highly reliable, while conclusions regarding site-level variability held some uncertainty.
+
+## Model Evaluation:
+
+To assess how well our hierarchical logistic regression model captured the observed patterns in discharge outcomes, we used posterior predictive diagnostics and examined our residuals. Our final model achieved an AUC of 0.73 (Figure 4) for patients discharged home or to rehab versus other outcomes, implying that its classification performance was acceptable. However, our residual plots revealed some error as plotting the deviance residuals against fitted probabilities and against age showed strong curvature (Figure 5 and 6). This indicated that even with the log transformation, the model did not perfectly capture nonlinear age effects or shifts in risk at the extreme ends of probability. Our residual distributions also varied systematically across the 9 hospital sites (Figure 7), consistent with our MCMC results that site-level heterogeneity played a large role. Additionally, our QQ-plot (Figure 8) demonstrated heavy tails, suggesting that our model could be underestimating some extreme-end observations. Overall, our diagnostic result indicated that the model well-captured broad trends and produced relatively accurate predictions, but did not perfectly predict the fine-tuned nonlinear age effects and substantial cross-site variations.
+
 ## Results:
 
 The posterior distribution for the program indicator had a mean of approximately 0.16, with a 95% credible interval that included 0 (Figure 4). As such, this estimate suggests a modest positive association between program implementation and improved discharge outcomes, though the uncertainty interval indicates that the magnitude of this improvement is small and not strongly distinguishable from no effect. In other words, while outcomes trend upward over time, the statistical evidence for a meaningful effect attributable solely to the program is weak.
 
-Several other covariates show consistent relationships with the outcome. Age exhibits a negative association with the probability of home/rehab discharge \[FIGURE HERE\], indicating older patients have lower odds of receiving a favorable outcome, consistent with both our EDA and clinical expectations. EMS arrivals were associated with worse outcomes \[FIGURE HERE\], which likely reflects underlying case severity, as patients arriving by EM tend to be more severely impaired.
+Several other covariates show consistent relationships with the outcome. Age exhibits a negative association with the probability of home/rehab discharge (Figure 4), indicating older patients have lower odds of receiving a favorable outcome, consistent with both our EDA and clinical expectations. EMS arrivals were associated with worse outcomes (Figure 4), which likely reflects underlying case severity, as patients arriving by EM tend to be more severely impaired.
 
-Finally, we found a substantial site-level heterogeneity. We discovered that the variance in random intercepts is larger than the magnitude of the program effect \[FIGURE HERE\], implying that the hospital itself plays a more influential role in discharge outcomes than the intervention program.
+Finally, we found a substantial site-level heterogeneity. We discovered that the variance in random intercepts is larger than the magnitude of the program effect (Figure 4), implying that the hospital itself plays a more influential role in discharge outcomes than the intervention program.
 
 # Shortcomings/Assumptions:
 
@@ -1306,7 +1364,6 @@ cat("Model fit (PPP):", ifelse(abs(ppp_mean - 0.5) < 0.3, "Good", "Check fit"), 
 cat("\nDiagnostics complete.\n")
 ```
 
-
 ```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figure 1. ROC curve for the model."}
 # ROC / AUC
 df_imputed <- df_imputed %>% mutate(pred_prob_phase = predict(final_glm_phase, type = "response"))
@@ -1398,7 +1455,48 @@ qqnorm(deviance_resid, pch = 16, col = rgb(0,0,0,0.5), main = "QQ Plot")
 qqline(deviance_resid, col = "red", lwd = 2)
 ```
 
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figure 9. Effective Sample Sizes"}
+# =============================================================================
+# CONVERGENCE DIAGNOSTICS
+# =============================================================================
 
+# Effective Sample Sizes
+ess <- effectiveSize(sims[, all_params])
+cat("\nEffective Sample Sizes:\n")
+print(ess)
 
+```
 
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figure 10. Trace Plots of Beta"}
 
+# Outcome model
+par(mfrow = c(4, 2), mar = c(2, 2, 2, 1))
+for (p in outcome_params) {
+  traceplot(sims[, p], main = p, col = c("red", "blue", "green", "purple"))
+}
+
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figure 11. Trace Plots of Gamma"}
+# Age model
+par(mfrow = c(2, 2), mar = c(2, 2, 2, 1))
+for (p in age_params) {
+  traceplot(sims[, p], main = p, col = c("red", "blue", "green", "purple"))
+}
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figure 12. Trace Plots of Hyperparameters"}
+# Hyperparameters
+par(mfrow = c(2, 2), mar = c(2, 2, 2, 1))
+for (p in hyper_params) {
+  traceplot(sims[, p], main = p, col = c("red", "blue", "green", "purple"))
+}
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figure 13. ACF Plots of Outcome Model"}
+# Outcome model
+par(mfrow = c(4, 2), mar = c(2, 2, 2, 1))
+for (p in outcome_params) {
+  acf(sims_mat[, p], main = paste("ACF:", p), lag.max = 50)
+}
+```
