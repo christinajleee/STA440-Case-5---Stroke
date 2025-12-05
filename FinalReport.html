@@ -121,7 +121,7 @@ window.Quarto = {
 <p>Once the chained imputations were complete, we generated fully imputed datasets and used these to compute correlations between each predictor and the outcome variable. Continuous variables were evaluated with Pearson correlations, and the ordinal predictors were evaluated using Spearman correlations. By combining the imputed datasets and using the correlations to create the full model, we made sure that our analysis accounted for the uncertainty introduced by the missing data.</p>
 <p><span class="math display">\[
 \begin{aligned}
-\operatorname{logit}\!\big(\Pr(\text{Home/Rehab})\big)
+\operatorname{log}\!\big(\Pr(\text{Home/Rehab})\big)
 &amp;= \beta_0
   + \beta_1(\text{Age})
   + \beta_2(\text{Pre-hospital notification}) \\
@@ -151,7 +151,7 @@ window.Quarto = {
 <h1>Evaluation:</h1>
 <section id="results" class="level2">
 <h2 class="anchored" data-anchor-id="results">Results:</h2>
-<p>The posterior distribution for the program indicator had a mean of approximately 0.16, with a 95% credible interval that included 0 [FIGURE HERE]. As such, this estimate suggests a modest positive association between program implementation and improved discharge outcomes, though the uncertainty interval indicates that the magnitude of this improvement is small and not strongly distinguishable from no effect. In other words, while outcomes trend upward over time, the statistical evidence for a meaningful effect attributable solely to the program is weak.</p>
+<p>The posterior distribution for the program indicator had a mean of approximately 0.16, with a 95% credible interval that included 0 (Figure 4). As such, this estimate suggests a modest positive association between program implementation and improved discharge outcomes, though the uncertainty interval indicates that the magnitude of this improvement is small and not strongly distinguishable from no effect. In other words, while outcomes trend upward over time, the statistical evidence for a meaningful effect attributable solely to the program is weak.</p>
 <p>Several other covariates show consistent relationships with the outcome. Age exhibits a negative association with the probability of home/rehab discharge [FIGURE HERE], indicating older patients have lower odds of receiving a favorable outcome, consistent with both our EDA and clinical expectations. EMS arrivals were associated with worse outcomes [FIGURE HERE], which likely reflects underlying case severity, as patients arriving by EM tend to be more severely impaired.</p>
 <p>Finally, we found a substantial site-level heterogeneity. We discovered that the variance in random intercepts is larger than the magnitude of the program effect [FIGURE HERE], implying that the hospital itself plays a more influential role in discharge outcomes than the intervention program.</p>
 </section>
@@ -171,7 +171,7 @@ window.Quarto = {
 <div class="cell-output-display">
 <div class="quarto-figure quarto-figure-center">
 <figure class="figure">
-<p><img src="FinalReport_files/figure-html/unnamed-chunk-2-1.png" class="img-fluid figure-img" width="672"></p>
+<p><img src="FinalReport_files/figure-html/unnamed-chunk-3-1.png" class="img-fluid figure-img" width="672"></p>
 <figcaption>Figure 1. ROC curve for the model.</figcaption>
 </figure>
 </div>
@@ -181,7 +181,7 @@ window.Quarto = {
 <div class="cell-output-display">
 <div class="quarto-figure quarto-figure-center">
 <figure class="figure">
-<p><img src="FinalReport_files/figure-html/unnamed-chunk-3-1.png" class="img-fluid figure-img" width="672"></p>
+<p><img src="FinalReport_files/figure-html/unnamed-chunk-4-1.png" class="img-fluid figure-img" width="672"></p>
 <figcaption>Figure 2. Residuals of Age.</figcaption>
 </figure>
 </div>
@@ -191,8 +191,77 @@ window.Quarto = {
 <div class="cell-output-display">
 <div class="quarto-figure quarto-figure-center">
 <figure class="figure">
-<p><img src="FinalReport_files/figure-html/unnamed-chunk-4-1.png" class="img-fluid figure-img" width="672"></p>
+<p><img src="FinalReport_files/figure-html/unnamed-chunk-5-1.png" class="img-fluid figure-img" width="672"></p>
 <figcaption>Figure 3. QQ-plot of deviance residuals (look for departures from Normal.</figcaption>
+</figure>
+</div>
+</div>
+</div>
+<div class="cell">
+<div class="cell-output cell-output-stdout">
+<pre><code>
+=== 95% CREDIBLE INTERVALS ===</code></pre>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code>
+--- Outcome Model ---</code></pre>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code>      Intercept:   1.499  [ -8.229,  13.805]
+        Program:   0.163  [ -0.100,   0.425]
+            Age:  -0.909  [ -1.109,  -0.717] *
+         Female:  -0.374  [ -0.632,  -0.117] *
+            EMS:  -0.609  [ -1.011,  -0.211] *
+            TPA:   0.534  [  0.203,   0.869] *
+   Thrombectomy:  -0.700  [ -1.018,  -0.374] *</code></pre>
+</div>
+</div>
+<div class="cell">
+<div class="cell-output-display">
+<div class="quarto-figure quarto-figure-center">
+<figure class="figure">
+<p><img src="FinalReport_files/figure-html/unnamed-chunk-7-1.png" class="img-fluid figure-img" width="672"></p>
+<figcaption>Figure 4. ROC/AUC for Bayesian Model.</figcaption>
+</figure>
+</div>
+</div>
+</div>
+<div class="cell">
+<div class="cell-output-display">
+<div class="quarto-figure quarto-figure-center">
+<figure class="figure">
+<p><img src="FinalReport_files/figure-html/unnamed-chunk-8-1.png" class="img-fluid figure-img" width="672"></p>
+<figcaption>Figure 5. Residuals vs.&nbsp;Fitted.</figcaption>
+</figure>
+</div>
+</div>
+</div>
+<div class="cell">
+<div class="cell-output-display">
+<div class="quarto-figure quarto-figure-center">
+<figure class="figure">
+<p><img src="FinalReport_files/figure-html/unnamed-chunk-9-1.png" class="img-fluid figure-img" width="672"></p>
+<figcaption>Figure 6. Residuals vs.&nbsp;Age.</figcaption>
+</figure>
+</div>
+</div>
+</div>
+<div class="cell">
+<div class="cell-output-display">
+<div class="quarto-figure quarto-figure-center">
+<figure class="figure">
+<p><img src="FinalReport_files/figure-html/unnamed-chunk-10-1.png" class="img-fluid figure-img" width="672"></p>
+<figcaption>Figure 7. Residuals by Site.</figcaption>
+</figure>
+</div>
+</div>
+</div>
+<div class="cell">
+<div class="cell-output-display">
+<div class="quarto-figure quarto-figure-center">
+<figure class="figure">
+<p><img src="FinalReport_files/figure-html/unnamed-chunk-11-1.png" class="img-fluid figure-img" width="672"></p>
+<figcaption>Figure 7. QQ Plot for Bayesian Model</figcaption>
 </figure>
 </div>
 </div>

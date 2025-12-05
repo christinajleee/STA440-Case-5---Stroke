@@ -38,7 +38,7 @@ Once the chained imputations were complete, we generated fully imputed datasets 
 
 $$
 \begin{aligned}
-\operatorname{logit}\!\big(\Pr(\text{Home/Rehab})\big)
+\operatorname{log}\!\big(\Pr(\text{Home/Rehab})\big)
 &= \beta_0 
   + \beta_1(\text{Age})
   + \beta_2(\text{Pre-hospital notification}) \\
@@ -74,7 +74,7 @@ Age was centered and scaled to improve mixing, and a random intercept was assign
 
 ## Results:
 
-The posterior distribution for the program indicator had a mean of approximately 0.16, with a 95% credible interval that included 0 \[FIGURE HERE\]. As such, this estimate suggests a modest positive association between program implementation and improved discharge outcomes, though the uncertainty interval indicates that the magnitude of this improvement is small and not strongly distinguishable from no effect. In other words, while outcomes trend upward over time, the statistical evidence for a meaningful effect attributable solely to the program is weak.
+The posterior distribution for the program indicator had a mean of approximately 0.16, with a 95% credible interval that included 0 (Figure 4). As such, this estimate suggests a modest positive association between program implementation and improved discharge outcomes, though the uncertainty interval indicates that the magnitude of this improvement is small and not strongly distinguishable from no effect. In other words, while outcomes trend upward over time, the statistical evidence for a meaningful effect attributable solely to the program is weak.
 
 Several other covariates show consistent relationships with the outcome. Age exhibits a negative association with the probability of home/rehab discharge \[FIGURE HERE\], indicating older patients have lower odds of receiving a favorable outcome, consistent with both our EDA and clinical expectations. EMS arrivals were associated with worse outcomes \[FIGURE HERE\], which likely reflects underlying case severity, as patients arriving by EM tend to be more severely impaired.
 
@@ -553,6 +553,760 @@ theme_minimal()
 # End of combined chunk
 ```
 
+```{r echo=FALSE, include=FALSE}
+# ---------------------------
+# Bayesian stroke model - Final specification with Age sub-model
+# ---------------------------
+
+# packages
+if (!requireNamespace("R2jags", quietly = TRUE)) install.packages("R2jags")
+if (!requireNamespace("coda", quietly = TRUE)) install.packages("coda")
+if (!requireNamespace("dplyr", quietly = TRUE)) install.packages("dplyr")
+if (!requireNamespace("pROC", quietly = TRUE)) install.packages("pROC")
+
+library(R2jags)
+library(coda)
+library(dplyr)
+library(pROC)
+
+# ---------- 0. load strokeStudy.RData ----------
+obj_names <- load("strokeStudy.RData")
+message("Loaded objects: ", paste(obj_names, collapse = ", "))
+
+if ("strokeStudy" %in% obj_names) {
+  strokeStudy <- get("strokeStudy")
+} else {
+  possible <- obj_names[sapply(obj_names, function(n) is.data.frame(get(n)))]
+  if (length(possible) == 0) stop("No data.frame found in strokeStudy.RData.")
+  strokeStudy <- get(possible[1])
+  message("Using object '", possible[1], "' as strokeStudy.")
+}
+
+# ---------- 1. Data preparation ----------
+df <- strokeStudy
+
+required_cols <- c("homeOrRehab","siteID","Time2","Age","Gender","EMSvsCar","hadTPA","hadThrombectomy")
+missing_cols <- setdiff(required_cols, names(df))
+if (length(missing_cols) > 0) stop("Missing required columns: ", paste(missing_cols, collapse = ", "))
+
+# Outcome: Y_i = 1 if discharged home or to inpatient rehab, 0 otherwise
+df$y <- as.integer(
+  (is.logical(df$homeOrRehab) & df$homeOrRehab == TRUE) |
+  toupper(as.character(df$homeOrRehab)) %in% c("YES","HOME","TRUE","1")
+)
+
+# Site index
+df$site <- as.integer(factor(df$siteID))
+nSite <- length(unique(df$site))
+
+# Time as integer
+df$time <- as.integer(factor(df$Time2))
+
+# Program indicator: 1 if Time2 >= 4 (post-implementation), 0 otherwise
+df$program <- as.integer(df$time >= 4)
+
+# Age: numeric (can be missing - will be imputed)
+df$Age_num <- suppressWarnings(as.numeric(as.character(df$Age)))
+
+# Female indicator
+df$female <- as.integer(toupper(as.character(df$Gender)) == "FEMALE")
+
+# EMS indicator
+df$EMS_chr <- toupper(as.character(df$EMSvsCar))
+df$ems <- as.integer(df$EMS_chr %in% c("EMS","1","TRUE","YES"))
+
+# Treatment indicators
+df$tpa <- as.integer(toupper(as.character(df$hadTPA)) %in% c("TRUE","1","YES"))
+df$thr <- as.integer(toupper(as.character(df$hadThrombectomy)) %in% c("TRUE","1","YES"))
+
+# For this model: only require non-missing outcome, site, and fully observed covariates
+# Age can be missing (will be imputed based on Program, Female, EMS)
+vars_essential <- c("y", "site", "program", "female", "ems", "tpa", "thr")
+df_model <- df[complete.cases(df[, vars_essential]), ]
+
+message("\nData summary:")
+message("Total rows in original data: ", nrow(df))
+message("Rows with complete essential variables: ", nrow(df_model))
+message("Number of sites: ", nSite)
+message("Missing Age values: ", sum(is.na(df_model$Age_num)))
+message("\nOutcome distribution:")
+print(table(df_model$y, useNA = "ifany"))
+
+if (nrow(df_model) == 0) stop("No valid cases available for analysis")
+
+# Standardize Age for better MCMC (use observed values only for standardization)
+age_mean <- mean(df_model$Age_num, na.rm = TRUE)
+age_sd <- sd(df_model$Age_num, na.rm = TRUE)
+df_model$age_std <- (df_model$Age_num - age_mean) / age_sd
+
+message("Age standardization: mean = ", round(age_mean, 2), ", sd = ", round(age_sd, 2))
+
+# Create JAGS data list
+data_jags <- list(
+  N       = nrow(df_model),
+  J       = nSite,
+  y       = df_model$y,
+  site    = df_model$site,
+  program = df_model$program,
+  age     = df_model$age_std,  # Can contain NA - will be imputed
+  female  = df_model$female,
+  ems     = df_model$ems,
+  tpa     = df_model$tpa,
+  thr     = df_model$thr
+)
+
+# ---------- 2. JAGS model matching specification ----------
+model_text <- "
+model {
+  # ============================================
+  # OUTCOME MODEL: Y_i ~ Bernoulli(p_i)
+  # ============================================
+  # logit(p_i) = α_j(i) + β_0 + β_1*Program_i + β_2*A_i + 
+  #              β_3*Female_i + β_4*EMS_i + β_5*TPA_i + β_6*Thrombectomy_i
+  
+  for (i in 1:N) {
+    y[i] ~ dbern(p[i])
+    logit(p[i]) <- alpha[site[i]] + beta0 + 
+                   beta1 * program[i] +
+                   beta2 * age[i] +
+                   beta3 * female[i] +
+                   beta4 * ems[i] +
+                   beta5 * tpa[i] +
+                   beta6 * thr[i]
+    
+    # ============================================
+    # AGE SUB-MODEL: A_i ~ N(μ_A,i, σ_A²)
+    # ============================================
+    # μ_A,i = γ_0 + γ_1*Female_i + γ_2*Program_i + γ_3*EMS_i
+    # For observed Age, this contributes to likelihood
+    # For missing Age, this is the imputation model
+    
+    age[i] ~ dnorm(mu_age[i], tau_age)
+    mu_age[i] <- gamma0 + gamma1 * female[i] + gamma2 * program[i] + gamma3 * ems[i]
+  }
+
+  # ============================================
+  # SITE RANDOM INTERCEPTS
+  # ============================================
+  # α_j ~ N(μ_α, σ_α²) for j = 1,...,J
+  
+  for (j in 1:J) {
+    alpha[j] ~ dnorm(mu_alpha, tau_alpha)
+  }
+
+  # ============================================
+  # PRIORS: Outcome Model Fixed Effects
+  # ============================================
+  # β_k ~ N(0, 10²) for k = 0,...,6
+  
+  beta0 ~ dnorm(0, 0.01)   # precision = 1/100 = 0.01
+  beta1 ~ dnorm(0, 0.01)   # Program effect
+  beta2 ~ dnorm(0, 0.01)   # Age effect
+  beta3 ~ dnorm(0, 0.01)   # Female effect
+  beta4 ~ dnorm(0, 0.01)   # EMS effect
+  beta5 ~ dnorm(0, 0.01)   # TPA effect
+  beta6 ~ dnorm(0, 0.01)   # Thrombectomy effect
+
+  # ============================================
+  # PRIORS: Age Model Fixed Effects
+  # ============================================
+  # γ_ℓ ~ N(0, 10²) for ℓ = 0,...,3
+  
+  gamma0 ~ dnorm(0, 0.01)  # Baseline age (intercept)
+  gamma1 ~ dnorm(0, 0.01)  # Female effect on age
+  gamma2 ~ dnorm(0, 0.01)  # Program effect on age
+  gamma3 ~ dnorm(0, 0.01)  # EMS effect on age
+
+  # ============================================
+  # HYPERPRIORS: Random Effects
+  # ============================================
+  # μ_α ~ N(0, 10²)
+  mu_alpha ~ dnorm(0, 0.01)
+  
+  # σ_α ~ Half-Normal(0, 2.5)
+  sigma_alpha ~ dnorm(0, 0.16) T(0,)  # precision = 1/(2.5²) = 0.16
+  tau_alpha <- pow(sigma_alpha, -2)
+
+  # ============================================
+  # HYPERPRIORS: Age Model Variance
+  # ============================================
+  # σ_A ~ Half-Normal(0, 20)
+  sigma_age ~ dnorm(0, 0.0025) T(0,)  # precision = 1/(20²) = 0.0025
+  tau_age <- pow(sigma_age, -2)
+}
+"
+cat(model_text, file = "stroke_model_final.jags")
+message("Wrote stroke_model_final.jags")
+
+# ---------- 3. Initial values function ----------
+inits_fn <- function() {
+  # CRITICAL: Only provide initial values for MISSING age values
+  # Observed age values must remain NA in the inits
+  age_init <- rep(NA_real_, length(df_model$age_std))
+  missing_idx <- which(is.na(df_model$age_std))
+  
+  # Only initialize where age is actually missing
+  if (length(missing_idx) > 0) {
+    age_init[missing_idx] <- 0  # Start missing ages at 0 (standardized mean)
+  }
+  
+  list(
+    beta0 = rnorm(1, 0, 0.1),
+    beta1 = rnorm(1, 0, 0.1),
+    beta2 = rnorm(1, 0, 0.1),
+    beta3 = rnorm(1, 0, 0.1),
+    beta4 = rnorm(1, 0, 0.1),
+    beta5 = rnorm(1, 0, 0.1),
+    beta6 = rnorm(1, 0, 0.1),
+    gamma0 = 0,
+    gamma1 = 0,
+    gamma2 = 0,
+    gamma3 = 0,
+    mu_alpha = rnorm(1, 0, 0.5),
+    sigma_alpha = runif(1, 0.1, 2),
+    sigma_age = runif(1, 0.5, 2),
+    alpha = rnorm(data_jags$J, 0, 0.5),
+    age = age_init  # NA for observed, initial values for missing
+  )
+}
+
+# Parameters to save
+params <- c("beta0", "beta1", "beta2", "beta3", "beta4", "beta5", "beta6",
+            "gamma0", "gamma1", "gamma2", "gamma3",
+            "mu_alpha", "sigma_alpha", "sigma_age", "alpha")
+
+# ---------- 4. Run JAGS ----------
+set.seed(440)
+message("\nRunning JAGS (4 chains, 20000 iterations, 10000 burn-in)...\n")
+
+jags_out <- jags(
+  data = data_jags,
+  inits = inits_fn,
+  parameters.to.save = params,
+  model.file = "stroke_model_final.jags",
+  n.chains = 4,
+  n.iter = 20000,
+  n.burnin = 10000,
+  n.thin = 5,
+  DIC = TRUE,
+  progress.bar = "text"
+)
+
+print(jags_out)
+
+# ---------- 5. Convergence diagnostics ----------
+sims <- as.mcmc(jags_out)
+sims_mat <- as.matrix(sims)
+
+cat("\n=== CONVERGENCE DIAGNOSTICS ===\n")
+cat("\n--- Gelman-Rubin diagnostics (Rhat, should be < 1.1) ---\n")
+gelman_diag <- gelman.diag(sims, multivariate = FALSE)
+print(gelman_diag)
+
+psrf_values <- gelman_diag$psrf[,1]
+if (any(psrf_values > 1.1, na.rm = TRUE)) {
+  warning("Some parameters have Rhat > 1.1. Consider longer chains.")
+  cat("\nParameters with poor convergence (Rhat > 1.1):\n")
+  print(psrf_values[psrf_values > 1.1])
+}
+
+cat("\n--- Effective sample sizes ---\n")
+ess <- effectiveSize(sims)
+print(head(ess, 20))
+
+if (any(ess < 400, na.rm = TRUE)) {
+  warning("Some parameters have ESS < 400. Consider more iterations.")
+}
+
+# ---------- 6. Posterior summaries ----------
+cat("\n=== POSTERIOR SUMMARIES ===\n")
+
+cat("\n--- OUTCOME MODEL (Fixed Effects) ---\n")
+outcome_params <- c("beta0", "beta1", "beta2", "beta3", "beta4", "beta5", "beta6")
+outcome_labels <- c("Intercept", "Program", "Age", "Female", "EMS", "TPA", "Thrombectomy")
+print(summary(sims[, outcome_params]))
+
+cat("\n--- AGE MODEL (Fixed Effects) ---\n")
+age_model_params <- c("gamma0", "gamma1", "gamma2", "gamma3")
+age_labels <- c("Intercept", "Female", "Program", "EMS")
+print(summary(sims[, age_model_params]))
+
+cat("\n--- RANDOM EFFECTS (Hyperparameters) ---\n")
+print(summary(sims[, c("mu_alpha", "sigma_alpha")]))
+
+cat("\n--- AGE MODEL VARIANCE ---\n")
+print(summary(sims[, "sigma_age"]))
+
+cat("\n=== 95% CREDIBLE INTERVALS ===\n")
+cat("\n--- Outcome Model ---\n")
+for (i in 1:length(outcome_params)) {
+  param <- outcome_params[i]
+  ci <- quantile(sims_mat[, param], probs = c(0.025, 0.975))
+  pm <- mean(sims_mat[, param])
+  sig <- if(ci[1] > 0 || ci[2] < 0) " *" else ""
+  cat(sprintf("%15s: %7.3f  [%7.3f, %7.3f]%s\n", outcome_labels[i], pm, ci[1], ci[2], sig))
+}
+
+cat("\n--- Age Model ---\n")
+for (i in 1:length(age_model_params)) {
+  param <- age_model_params[i]
+  ci <- quantile(sims_mat[, param], probs = c(0.025, 0.975))
+  pm <- mean(sims_mat[, param])
+  sig <- if(ci[1] > 0 || ci[2] < 0) " *" else ""
+  cat(sprintf("%15s: %7.3f  [%7.3f, %7.3f]%s\n", age_labels[i], pm, ci[1], ci[2], sig))
+}
+
+# ---------- 7. Interpret Age Model ----------
+cat("\n=== AGE MODEL INTERPRETATION ===\n")
+gamma1_pm <- mean(sims_mat[, "gamma1"])
+gamma2_pm <- mean(sims_mat[, "gamma2"])
+gamma3_pm <- mean(sims_mat[, "gamma3"])
+
+cat("Baseline age (γ0): ", round(mean(sims_mat[, "gamma0"]), 3), " SD units\n")
+cat("  On original scale: ", round(mean(sims_mat[, "gamma0"]) * age_sd + age_mean, 1), " years\n\n")
+
+cat("Female effect (γ1): ", round(gamma1_pm, 3), " SD units\n")
+cat("  Interpretation: Females are on average ", 
+    abs(round(gamma1_pm * age_sd, 1)), " years ",
+    ifelse(gamma1_pm > 0, "OLDER", "YOUNGER"), " than males\n")
+cat("  95% CI: [", round(quantile(sims_mat[, "gamma1"], 0.025), 3), ", ",
+    round(quantile(sims_mat[, "gamma1"], 0.975), 3), "]\n\n")
+
+cat("Program effect (γ2): ", round(gamma2_pm, 3), " SD units\n")
+cat("  Interpretation: Post-implementation patients are on average ",
+    abs(round(gamma2_pm * age_sd, 1)), " years ",
+    ifelse(gamma2_pm > 0, "OLDER", "YOUNGER"), " than baseline\n")
+cat("  95% CI: [", round(quantile(sims_mat[, "gamma2"], 0.025), 3), ", ",
+    round(quantile(sims_mat[, "gamma2"], 0.975), 3), "]\n\n")
+
+cat("EMS effect (γ3): ", round(gamma3_pm, 3), " SD units\n")
+cat("  Interpretation: EMS-transported patients are on average ",
+    abs(round(gamma3_pm * age_sd, 1)), " years ",
+    ifelse(gamma3_pm > 0, "OLDER", "YOUNGER"), " than car arrivals\n")
+cat("  95% CI: [", round(quantile(sims_mat[, "gamma3"], 0.025), 3), ", ",
+    round(quantile(sims_mat[, "gamma3"], 0.975), 3), "]\n\n")
+
+cat("Age variability (σ_A): ", round(mean(sims_mat[, "sigma_age"]), 3), 
+    " SD units (", round(mean(sims_mat[, "sigma_age"]) * age_sd, 1), " years)\n")
+
+# ---------- 8. Model Performance ----------
+cat("\n=== MODEL PERFORMANCE ===\n")
+
+# Extract posterior mean ages (including imputed values)
+age_cols <- grep("^age\\[", colnames(sims_mat), value = TRUE)
+# Note: age posterior draws are not saved by default
+# Use posterior mean from age model for missing values
+alpha_names <- grep("^alpha\\[", colnames(sims_mat), value = TRUE)
+alpha_pm <- colMeans(sims_mat[, alpha_names, drop = FALSE])
+
+beta0_pm <- mean(sims_mat[, "beta0"])
+beta1_pm <- mean(sims_mat[, "beta1"])
+beta2_pm <- mean(sims_mat[, "beta2"])
+beta3_pm <- mean(sims_mat[, "beta3"])
+beta4_pm <- mean(sims_mat[, "beta4"])
+beta5_pm <- mean(sims_mat[, "beta5"])
+beta6_pm <- mean(sims_mat[, "beta6"])
+
+gamma0_pm <- mean(sims_mat[, "gamma0"])
+gamma1_pm <- mean(sims_mat[, "gamma1"])
+gamma2_pm <- mean(sims_mat[, "gamma2"])
+gamma3_pm <- mean(sims_mat[, "gamma3"])
+
+# Impute missing ages using posterior mean
+age_pm <- df_model$age_std
+missing_age <- is.na(age_pm)
+if (any(missing_age)) {
+  age_pm[missing_age] <- gamma0_pm + 
+                         gamma1_pm * df_model$female[missing_age] + 
+                         gamma2_pm * df_model$program[missing_age] +
+                         gamma3_pm * df_model$ems[missing_age]
+  cat("Imputed ", sum(missing_age), " missing age values using posterior means\n")
+}
+
+# Compute predictions
+linpred_pm <- beta0_pm + alpha_pm[data_jags$site] +
+              beta1_pm * data_jags$program +
+              beta2_pm * age_pm +
+              beta3_pm * data_jags$female +
+              beta4_pm * data_jags$ems +
+              beta5_pm * data_jags$tpa +
+              beta6_pm * data_jags$thr
+
+p_pm <- plogis(linpred_pm)
+df_model$pred_prob_postmean <- p_pm
+
+cat("\nPredicted probability summary:\n")
+print(summary(p_pm))
+
+# AUC
+roc_obj <- roc(df_model$y, df_model$pred_prob_postmean, quiet = TRUE)
+auc_val <- auc(roc_obj)
+cat("\nAUC (posterior mean predictions): ", round(auc_val, 4), "\n")
+
+# ---------- 9. Save results ----------
+saveRDS(jags_out, file = "stroke_jags_final.rds")
+saveRDS(df_model, file = "stroke_with_preds_final.rds")
+saveRDS(list(
+  posterior_means = list(
+    outcome_model = setNames(c(beta0_pm, beta1_pm, beta2_pm, beta3_pm, beta4_pm, beta5_pm, beta6_pm),
+                              outcome_labels),
+    age_model = setNames(c(gamma0_pm, gamma1_pm, gamma2_pm, gamma3_pm), age_labels),
+    random_effects = list(
+      mu_alpha = mean(sims_mat[, "mu_alpha"]),
+      sigma_alpha = mean(sims_mat[, "sigma_alpha"])
+    ),
+    age_variance = mean(sims_mat[, "sigma_age"])
+  ),
+  credible_intervals_outcome = sapply(outcome_params, function(p) {
+    quantile(sims_mat[, p], probs = c(0.025, 0.975))
+  }),
+  credible_intervals_age = sapply(age_model_params, function(p) {
+    quantile(sims_mat[, p], probs = c(0.025, 0.975))
+  }),
+  auc = auc_val,
+  convergence = gelman_diag,
+  ess = ess,
+  age_standardization = list(mean = age_mean, sd = age_sd)
+), file = "model_results_final.rds")
+
+message("\n=== ANALYSIS COMPLETE ===")
+message("Files saved:")
+message("  stroke_jags_final.rds")
+message("  stroke_with_preds_final.rds")
+message("  model_results_final.rds")
+message("\nNote: * indicates 95% CI excludes 0 (significant effect)")
+
+# =============================================================================
+# Streamlined JAGS Model Diagnostics - New Age Sub-Model
+# =============================================================================
+
+library(R2jags)
+library(coda)
+library(pROC)
+library(dplyr)
+
+# Load results
+jags_out <- readRDS("stroke_jags_final.rds")
+df_model <- readRDS("stroke_with_preds_final.rds")
+results <- readRDS("model_results_final.rds")
+
+sims <- as.mcmc(jags_out)
+sims_mat <- as.matrix(sims)
+
+age_mean <- results$age_standardization$mean
+age_sd <- results$age_standardization$sd
+
+# =============================================================================
+# CONVERGENCE DIAGNOSTICS
+# =============================================================================
+
+cat("\n=== CONVERGENCE DIAGNOSTICS ===\n")
+outcome_params <- c("beta0", "beta1", "beta2", "beta3", "beta4", "beta5", "beta6")
+age_params <- c("gamma0", "gamma1", "gamma2", "gamma3")
+hyper_params <- c("mu_alpha", "sigma_alpha", "sigma_age")
+all_params <- c(outcome_params, age_params, hyper_params)
+
+# Gelman-Rubin
+gelman_diag <- gelman.diag(sims[, all_params], multivariate = FALSE)
+print(gelman_diag)
+
+# Effective Sample Sizes
+ess <- effectiveSize(sims[, all_params])
+cat("\nEffective Sample Sizes:\n")
+print(ess)
+
+# Flag issues
+bad_rhat <- gelman_diag$psrf[,1] > 1.1
+bad_ess <- ess < 400
+if (any(bad_rhat)) cat("\nWARNING: Rhat > 1.1 for:", names(which(bad_rhat)), "\n")
+if (any(bad_ess)) cat("WARNING: ESS < 400 for:", names(which(bad_ess)), "\n")
+
+# =============================================================================
+# TRACE PLOTS
+# =============================================================================
+
+cat("\n=== TRACE PLOTS ===\n")
+
+# Outcome model
+par(mfrow = c(4, 2), mar = c(2, 2, 2, 1))
+for (p in outcome_params) {
+  traceplot(sims[, p], main = p, col = c("red", "blue", "green", "purple"))
+}
+
+# Age model
+par(mfrow = c(2, 2), mar = c(2, 2, 2, 1))
+for (p in age_params) {
+  traceplot(sims[, p], main = p, col = c("red", "blue", "green", "purple"))
+}
+
+# Hyperparameters
+par(mfrow = c(2, 2), mar = c(2, 2, 2, 1))
+for (p in hyper_params) {
+  traceplot(sims[, p], main = p, col = c("red", "blue", "green", "purple"))
+}
+
+# =============================================================================
+# POSTERIOR DENSITIES
+# =============================================================================
+
+cat("\n=== POSTERIOR DENSITIES ===\n")
+
+# Outcome model
+par(mfrow = c(4, 2), mar = c(2, 2, 2, 1))
+for (p in outcome_params) {
+  densplot(sims[, p], main = p, col = c("red", "blue", "green", "purple"))
+  abline(v = 0, lty = 2, col = "black", lwd = 2)
+}
+
+# Age model
+par(mfrow = c(2, 2), mar = c(2, 2, 2, 1))
+for (p in age_params) {
+  densplot(sims[, p], main = p, col = c("red", "blue", "green", "purple"))
+  abline(v = 0, lty = 2, col = "black", lwd = 2)
+}
+
+# =============================================================================
+# RESIDUAL DIAGNOSTICS
+# =============================================================================
+
+cat("\n=== RESIDUAL DIAGNOSTICS ===\n")
+
+# Extract posterior means
+alpha_names <- grep("^alpha\\[", colnames(sims_mat), value = TRUE)
+alpha_pm <- colMeans(sims_mat[, alpha_names, drop = FALSE])
+
+beta_pm <- colMeans(sims_mat[, outcome_params])
+gamma_pm <- colMeans(sims_mat[, age_params])
+
+# Impute missing ages
+age_for_pred <- df_model$age_std
+missing_age <- is.na(age_for_pred)
+if (any(missing_age)) {
+  age_for_pred[missing_age] <- gamma_pm[1] + 
+                                gamma_pm[2] * df_model$female[missing_age] + 
+                                gamma_pm[3] * df_model$program[missing_age] +
+                                gamma_pm[4] * df_model$ems[missing_age]
+  cat("Imputed", sum(missing_age), "missing ages\n")
+}
+
+# Compute fitted values
+linpred <- beta_pm[1] + alpha_pm[df_model$site] +
+           beta_pm[2] * df_model$program +
+           beta_pm[3] * age_for_pred +
+           beta_pm[4] * df_model$female +
+           beta_pm[5] * df_model$ems +
+           beta_pm[6] * df_model$tpa +
+           beta_pm[7] * df_model$thr
+
+fitted_prob <- plogis(linpred)
+
+# Residuals
+deviance_resid <- sign(df_model$y - fitted_prob) * 
+                  sqrt(-2 * (df_model$y * log(fitted_prob + 1e-10) + 
+                             (1 - df_model$y) * log(1 - fitted_prob + 1e-10)))
+
+pearson_resid <- (df_model$y - fitted_prob) / sqrt(fitted_prob * (1 - fitted_prob) + 1e-10)
+
+cat("\nDeviance Residuals Summary:\n")
+print(summary(deviance_resid))
+
+# Residual plots
+par(mfrow = c(2, 3), mar = c(3, 3, 2, 1))
+
+plot(fitted_prob, deviance_resid, pch = 16, col = rgb(0,0,0,0.3),
+     xlab = "Fitted Probability", ylab = "Deviance Residuals",
+     main = "Residuals vs Fitted")
+abline(h = 0, col = "red", lwd = 2, lty = 2)
+lines(lowess(fitted_prob, deviance_resid), col = "blue", lwd = 2)
+
+plot(age_for_pred, deviance_resid, pch = 16, col = rgb(0,0,0,0.3),
+     xlab = "Age (std)", ylab = "Deviance Residuals",
+     main = "Residuals vs Age")
+abline(h = 0, col = "red", lwd = 2, lty = 2)
+lines(lowess(age_for_pred, deviance_resid), col = "blue", lwd = 2)
+
+boxplot(deviance_resid ~ df_model$program, col = c("lightblue", "lightgreen"),
+        xlab = "Program", ylab = "Deviance Residuals", main = "By Program")
+abline(h = 0, col = "red", lwd = 2, lty = 2)
+
+boxplot(deviance_resid ~ df_model$site, col = rainbow(9),
+        xlab = "Site", ylab = "Deviance Residuals", main = "By Site")
+abline(h = 0, col = "red", lwd = 2, lty = 2)
+
+qqnorm(deviance_resid, pch = 16, col = rgb(0,0,0,0.5), main = "QQ Plot")
+qqline(deviance_resid, col = "red", lwd = 2)
+
+hist(deviance_resid, breaks = 30, col = "lightblue", border = "white",
+     main = "Residual Distribution", xlab = "Deviance Residuals", freq = FALSE)
+curve(dnorm(x, mean(deviance_resid), sd(deviance_resid)), add = TRUE, col = "red", lwd = 2)
+
+# =============================================================================
+# MODEL PERFORMANCE
+# =============================================================================
+
+cat("\n=== MODEL PERFORMANCE ===\n")
+
+# ROC/AUC
+roc_obj <- roc(df_model$y, fitted_prob, quiet = TRUE)
+auc_val <- auc(roc_obj)
+
+# Confusion matrix
+pred_class <- ifelse(fitted_prob > 0.5, 1, 0)
+conf_mat <- table(Predicted = pred_class, Actual = df_model$y)
+
+accuracy <- sum(diag(conf_mat)) / sum(conf_mat)
+sensitivity <- conf_mat[2, 2] / sum(conf_mat[, 2])
+specificity <- conf_mat[1, 1] / sum(conf_mat[, 1])
+
+cat("\nAUC:", round(auc_val, 4))
+cat("\nAccuracy:", round(accuracy, 4))
+cat("\nSensitivity:", round(sensitivity, 4))
+cat("\nSpecificity:", round(specificity, 4))
+cat("\n\nConfusion Matrix:\n")
+print(conf_mat)
+
+# Plots
+par(mfrow = c(1, 2), mar = c(4, 4, 2, 1))
+
+plot(roc_obj, col = "blue", lwd = 2, main = paste0("ROC (AUC=", round(auc_val, 3), ")"))
+abline(a = 0, b = 1, lty = 2, col = "red")
+
+# Calibration
+df_model$prob_bin <- cut(fitted_prob, breaks = 10, include.lowest = TRUE)
+cal_data <- df_model %>%
+  group_by(prob_bin) %>%
+  summarise(observed = mean(y), predicted = mean(fitted_prob), n = n())
+
+plot(cal_data$predicted, cal_data$observed, xlim = c(0,1), ylim = c(0,1),
+     pch = 16, cex = sqrt(cal_data$n)/3, col = "blue",
+     xlab = "Predicted", ylab = "Observed", main = "Calibration")
+abline(a = 0, b = 1, col = "red", lwd = 2, lty = 2)
+
+# =============================================================================
+# POSTERIOR PREDICTIVE CHECK
+# =============================================================================
+
+cat("\n=== POSTERIOR PREDICTIVE CHECK ===\n")
+
+n_sim <- 100
+n_obs <- nrow(df_model)
+y_rep <- matrix(NA, n_sim, n_obs)
+
+for (i in 1:n_sim) {
+  idx <- sample(nrow(sims_mat), 1)
+  beta_s <- sims_mat[idx, outcome_params]
+  alpha_s <- sims_mat[idx, alpha_names]
+  
+  linpred_s <- beta_s[1] + alpha_s[df_model$site] +
+               beta_s[2] * df_model$program +
+               beta_s[3] * age_for_pred +
+               beta_s[4] * df_model$female +
+               beta_s[5] * df_model$ems +
+               beta_s[6] * df_model$tpa +
+               beta_s[7] * df_model$thr
+  
+  y_rep[i, ] <- rbinom(n_obs, 1, plogis(linpred_s))
+}
+
+mean_obs <- mean(df_model$y)
+mean_rep <- rowMeans(y_rep)
+ppp_mean <- mean(mean_rep >= mean_obs)
+
+cat("Observed mean:", round(mean_obs, 3))
+cat("\nReplicated mean:", round(mean(mean_rep), 3))
+cat("\nPosterior predictive p-value:", round(ppp_mean, 3))
+cat(" (should be ~0.5)\n")
+
+par(mfrow = c(2, 2), mar = c(3, 3, 2, 1))
+
+hist(df_model$y, breaks = 2, col = rgb(1,0,0,0.5), main = "Observed vs Replicated",
+     xlab = "Outcome", xlim = c(-0.5,1.5), freq = FALSE)
+for (i in 1:20) hist(y_rep[i,], breaks = 2, add = TRUE, col = rgb(0,0,1,0.05), freq = FALSE)
+
+hist(mean_rep, col = "lightblue", main = "Replicated Means", xlab = "Mean")
+abline(v = mean_obs, col = "red", lwd = 3)
+
+sd_rep <- apply(y_rep, 1, sd)
+hist(sd_rep, col = "lightgreen", main = "Replicated SDs", xlab = "SD")
+abline(v = sd(df_model$y), col = "red", lwd = 3)
+
+plot(mean_rep, sd_rep, pch = 16, col = rgb(0,0,0,0.5),
+     xlab = "Mean", ylab = "SD", main = "Mean-SD Relationship")
+points(mean_obs, sd(df_model$y), pch = 16, col = "red", cex = 2)
+
+# =============================================================================
+# AGE MODEL DIAGNOSTICS
+# =============================================================================
+
+cat("\n=== AGE MODEL DIAGNOSTICS ===\n")
+
+cat("\nAge Effects (on standardized scale):\n")
+for (i in 1:length(age_params)) {
+  ci <- quantile(sims_mat[, age_params[i]], probs = c(0.025, 0.975))
+  pm <- mean(sims_mat[, age_params[i]])
+  sig <- if(ci[1] > 0 || ci[2] < 0) " *" else ""
+  cat(sprintf("  %s: %.3f [%.3f, %.3f]%s\n", 
+              c("Intercept","Female","Program","EMS")[i], pm, ci[1], ci[2], sig))
+}
+
+cat("\nInterpretation (in years):\n")
+cat("  Female effect:", round(gamma_pm[2] * age_sd, 1), "years\n")
+cat("  Program effect:", round(gamma_pm[3] * age_sd, 1), "years\n")
+cat("  EMS effect:", round(gamma_pm[4] * age_sd, 1), "years\n")
+
+par(mfrow = c(2, 2), mar = c(3, 3, 2, 1))
+
+# Age by covariates
+age_obs <- df_model$age_std[!is.na(df_model$age_std)]
+hist(age_obs, breaks = 30, col = "lightblue", main = "Observed Age Distribution",
+     xlab = "Age (std)", freq = FALSE)
+curve(dnorm(x, mean(age_obs), sd(age_obs)), add = TRUE, col = "red", lwd = 2)
+
+boxplot(age_std ~ female, data = df_model, col = c("lightblue", "pink"),
+        names = c("Male", "Female"), ylab = "Age (std)", main = "Age by Gender")
+
+boxplot(age_std ~ program, data = df_model, col = c("lightblue", "lightgreen"),
+        names = c("Baseline", "Post"), ylab = "Age (std)", main = "Age by Program")
+
+boxplot(age_std ~ ems, data = df_model, col = c("lightblue", "orange"),
+        names = c("Car", "EMS"), ylab = "Age (std)", main = "Age by Transport")
+
+# =============================================================================
+# ACF PLOTS
+# =============================================================================
+
+cat("\n=== ACF PLOTS ===\n")
+
+# Outcome model
+par(mfrow = c(4, 2), mar = c(2, 2, 2, 1))
+for (p in outcome_params) {
+  acf(sims_mat[, p], main = paste("ACF:", p), lag.max = 50)
+}
+
+# Age model
+par(mfrow = c(2, 2), mar = c(2, 2, 2, 1))
+for (p in age_params) {
+  acf(sims_mat[, p], main = paste("ACF:", p), lag.max = 50)
+}
+
+# Hyperparameters
+par(mfrow = c(2, 2), mar = c(2, 2, 2, 1))
+for (p in hyper_params) {
+  acf(sims_mat[, p], main = paste("ACF:", p), lag.max = 50)
+}
+
+# =============================================================================
+# SUMMARY
+# =============================================================================
+
+cat("\n=== SUMMARY ===\n")
+cat("AUC:", round(auc_val, 3), "\n")
+cat("Convergence:", ifelse(all(!bad_rhat), "Good", "Issues detected"), "\n")
+cat("Model fit (PPP):", ifelse(abs(ppp_mean - 0.5) < 0.3, "Good", "Check fit"), "\n")
+cat("\nDiagnostics complete.\n")
+```
+
+
 ```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figure 1. ROC curve for the model."}
 # ROC / AUC
 df_imputed <- df_imputed %>% mutate(pred_prob_phase = predict(final_glm_phase, type = "response"))
@@ -595,3 +1349,56 @@ p2 <- ggplot(diag_df, aes(sample = dev_resid)) +
 
 p2
 ```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, tbl-cap="Table 1. 95% Credible Intervals."}
+
+cat("\n=== 95% CREDIBLE INTERVALS ===\n")
+cat("\n--- Outcome Model ---\n")
+for (i in 1:length(outcome_params)) {
+  param <- outcome_params[i]
+  ci <- quantile(sims_mat[, param], probs = c(0.025, 0.975))
+  pm <- mean(sims_mat[, param])
+  sig <- if(ci[1] > 0 || ci[2] < 0) " *" else ""
+  cat(sprintf("%15s: %7.3f  [%7.3f, %7.3f]%s\n", outcome_labels[i], pm, ci[1], ci[2], sig))
+}
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figure 4. ROC/AUC for Bayesian Model."}
+# ROC/AUC
+
+plot(roc_obj, col = "blue", lwd = 2, main = paste0("ROC (AUC=", round(auc_val, 3), ")"))
+abline(a = 0, b = 1, lty = 2, col = "red")
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figure 5. Residuals vs. Fitted."}
+plot(fitted_prob, deviance_resid, pch = 16, col = rgb(0,0,0,0.3),
+     xlab = "Fitted Probability", ylab = "Deviance Residuals",
+     main = "Residuals vs Fitted")
+abline(h = 0, col = "red", lwd = 2, lty = 2)
+lines(lowess(fitted_prob, deviance_resid), col = "blue", lwd = 2)
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figure 6. Residuals vs. Age."}
+plot(age_for_pred, deviance_resid, pch = 16, col = rgb(0,0,0,0.3),
+     xlab = "Age (std)", ylab = "Deviance Residuals",
+     main = "Residuals vs Age")
+abline(h = 0, col = "red", lwd = 2, lty = 2)
+lines(lowess(age_for_pred, deviance_resid), col = "blue", lwd = 2)
+
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figure 7. Residuals by Site."}
+boxplot(deviance_resid ~ df_model$site, col = rainbow(9),
+        xlab = "Site", ylab = "Deviance Residuals", main = "By Site")
+abline(h = 0, col = "red", lwd = 2, lty = 2)
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Figure 8. QQ Plot for Bayesian Model"}
+qqnorm(deviance_resid, pch = 16, col = rgb(0,0,0,0.5), main = "QQ Plot")
+qqline(deviance_resid, col = "red", lwd = 2)
+```
+
+
+
+
+
